@@ -11,6 +11,15 @@ struct ChangeReviewRequest: Equatable, Sendable {
     }
 }
 
+enum ReviewSelectionPolicy {
+    static func shouldClearForGlobalSidebarToggle(
+        sidebarIsVisible: Bool,
+        mode: RightSidebarMode
+    ) -> Bool {
+        !sidebarIsVisible && mode == .review
+    }
+}
+
 enum AssistantContentBlock: Equatable {
     case text(String)
     case thinking(String)

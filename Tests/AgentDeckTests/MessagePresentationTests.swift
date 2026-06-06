@@ -33,6 +33,27 @@ final class MessagePresentationTests: XCTestCase {
         XCTAssertNil(ChangeReviewRequest.forMessage(legacy))
     }
 
+    func testGlobalSidebarOpenClearsHistoricalReviewSelectionOnlyInReviewMode() {
+        XCTAssertTrue(
+            ReviewSelectionPolicy.shouldClearForGlobalSidebarToggle(
+                sidebarIsVisible: false,
+                mode: .review
+            )
+        )
+        XCTAssertFalse(
+            ReviewSelectionPolicy.shouldClearForGlobalSidebarToggle(
+                sidebarIsVisible: true,
+                mode: .review
+            )
+        )
+        XCTAssertFalse(
+            ReviewSelectionPolicy.shouldClearForGlobalSidebarToggle(
+                sidebarIsVisible: false,
+                mode: .files
+            )
+        )
+    }
+
     func testDetectsInlineLoginAndAPIError() {
         let text = #"Please run /login · API Error: 403 {"error":{"type":"new_api_error","message":"预扣费额度失败"},"type":"error"}"#
 

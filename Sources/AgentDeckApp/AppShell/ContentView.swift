@@ -262,7 +262,18 @@ struct ContentView: View {
                         AgentPageHeader(
                             session: session,
                             terminalLaunch: $terminalLaunch,
-                            showFiles: $showFiles
+                            showFiles: showFiles,
+                            onToggleFiles: {
+                                if ReviewSelectionPolicy.shouldClearForGlobalSidebarToggle(
+                                    sidebarIsVisible: showFiles,
+                                    mode: sidebarMode
+                                ) {
+                                    selectedReviewSummary = nil
+                                }
+                                withAnimation(.easeInOut(duration: 0.28)) {
+                                    showFiles.toggle()
+                                }
+                            }
                         )
                         ChatPaneView(
                             session: session,
@@ -596,7 +607,8 @@ private struct AgentTabRow: View {
 private struct AgentPageHeader: View {
     let session: AgentSession
     @Binding var terminalLaunch: TerminalLaunch?
-    @Binding var showFiles: Bool
+    let showFiles: Bool
+    let onToggleFiles: () -> Void
     @State private var showingGit = false
 
     var body: some View {
@@ -616,7 +628,7 @@ private struct AgentPageHeader: View {
                 showingGit = true
             }
             HeaderIconButton(systemImage: "sidebar.right", isActive: showFiles, help: "右侧栏：文件 / 浏览器") {
-                withAnimation(.easeInOut(duration: 0.28)) { showFiles.toggle() }
+                onToggleFiles()
             }
             HeaderIconButton(systemImage: "terminal", isActive: terminalLaunch != nil, help: "终端（下方）") {
                 withAnimation(.easeInOut(duration: 0.28)) {

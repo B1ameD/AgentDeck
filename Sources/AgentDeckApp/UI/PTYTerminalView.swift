@@ -17,8 +17,8 @@ struct TerminalLaunch: Equatable, Sendable {
     }
 }
 
-/// 真·PTY 终端：用 SwiftTerm 的 LocalProcessTerminalView 在工作目录里起一个登录 shell。
-/// 与命令终端不同，这是带伪终端的交互式 shell——cd / 环境跨命令保留，可跑 vim、REPL 等。
+/// 真·PTY 终端：用 SwiftTerm 的 LocalProcessTerminalView 在工作目录里启动登录 shell 或指定交互命令。
+/// 与命令终端不同，这是带伪终端的交互式进程，可运行 vim、REPL、OAuth 登录等。
 struct PTYTerminalView: NSViewRepresentable {
     let workingDirectory: URL
     let launch: TerminalLaunch
