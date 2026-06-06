@@ -1,0 +1,69 @@
+import SwiftUI
+import AppKit
+
+/// 通用拖拽缩放分隔条：用 NSView 接管鼠标（mouseDownCanMoveWindow=false，避免拖到窗口本身），
+/// 以 mouseDown 时的位置为基准回报「沿指定轴的累计位移」。
+/// 横向：向右为正；纵向：向下为正。配套显示左右 / 上下调整光标。
+struct ResizeDivider: NSViewRepresentable {
+    enum Axis { case horizontal, vertical }
+
+    let axis: Axis
+    var onBegan: () -> Void
+    var onChanged: (CGFloat) -> Void
+    var onEnded: () -> Void
+
+    func makeNSView(context: Context) -> ResizeDividerNSView {
+        let view = ResizeDividerNSView()
+        view.configure(axis: axis, onBegan: onBegan, onChanged: onChanged, onEnded: onEnded)
+        return view
+    }
+
+    func updateNSView(_ nsView: ResizeDividerNSView, context: Context) {
+        nsView.configure(axis: axis, onBegan: onBegan, onChanged: onChanged, onEnded: onEnded)
+    }
+}
+
+final class ResizeDividerNSView: NSView {
+    private var axis: ResizeDivider.Axis = .vertical
+    private var onBegan: (() -> Void)?
+    private var onChanged: ((CGFloat) -> Void)?
+    private var onEnded: (() -> Void)?
+
+    private var start: CGFloat = 0
+
+    func configure(
+        axis: ResizeDivider.Axis,
+        onBegan: @escaping () -> Void,
+        onChanged: @escaping (CGFloat) -> Void,
+        onEnded: @escaping () -> Void
+    ) {
+        self.axis = axis
+        self.onBegan = onBegan
+        self.onChanged = onChanged
+        self.onEnded = onEnded
+        window?.invalidateCursorRects(for: self)
+    }
+
+    /// 关键：禁止在本视图按下时移动整个窗口。
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: axis == .horizontal ? .resizeLeftRight : .resizeUpDown)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let p = event.locationInWindow
+        start = axis == .horizontal ? p.x : p.y
+        onBegan?()
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        let p = event.locationInWindow
+        // 横向：向右为正；纵向：窗口 y 向上为正 → 取 start - y 使向下为正。
+        onChanged?(axis == .horizontal ? p.x - start : start - p.y)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        onEnded?()
+    }
+}

@@ -1,0 +1,80 @@
+# Build artifacts
+.build/
+dist/
+*.app/
+
+# Xcode / Swift
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+DerivedData/
+*.moved-aside
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Swift Package Manager
+.swiftpm/
+Package.resolved
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Temporary / Test files
+test.md
+test_script.py
+fix_plan.md
+*.log
+
+# Project-specific docs (not for repo)
+AGENTDECK_DIFF_REVIEW_FIX_PLAN.md
+AGENTDECK_KNOWN_BUGS_HANDOFF.md
+CHANGELOG-SESSION.md
+
+# Superpowers
+.superpowers/
+
+# Icons source (keep only built icons)
+icons/appicon-source.png
+icons/make_appicon.py
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Node (if ever used)
+node_modules/
+npm-debug.log*
+
+# Environment / Secrets
+.env
+.env.local
+*.pem
+*.key
