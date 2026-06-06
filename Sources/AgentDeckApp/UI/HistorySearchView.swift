@@ -8,6 +8,7 @@ struct HistorySearchView: View {
     @State private var query = ""
     @State private var hits: [ConversationHit] = []
     @State private var selected: StoredConversation?
+    @State private var restoreError: String?
 
     private var trimmedQuery: String {
         query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -53,7 +54,10 @@ struct HistorySearchView: View {
                         .foregroundStyle(.secondary).padding(12)
                 }
                 ForEach(hits) { hit in
-                    Button { selected = workspace.conversation(id: hit.id) } label: {
+                    Button {
+                        selected = workspace.conversation(id: hit.id)
+                        restoreError = nil
+                    } label: {
                         VStack(alignment: .leading, spacing: 3) {
                             HStack {
                                 Text(hit.title).appFont(relative: -1, weight: .medium).lineLimit(1)
@@ -77,27 +81,74 @@ struct HistorySearchView: View {
     @ViewBuilder
     private var transcript: some View {
         if let selected {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 10) {
-                    ForEach(selected.messages) { message in
-                        if message.role == .assistant {
-                            MarkdownText(content: message.text)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        } else {
-                            Text(message.text)
-                                .appFont()
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
+            VStack(spacing: 0) {
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(selected.title)
+                            .appFont(relative: 1, weight: .semibold)
+                            .lineLimit(1)
+                        Text(selected.agentName)
+                            .appFont(relative: -2)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if !workspace.canReopenConversation(id: selected.id) {
+                        Label("原 Agent 不可用", systemImage: "exclamationmark.triangle")
+                            .appFont(relative: -2)
+                            .foregroundStyle(.orange)
+                    }
+                    Button("恢复会话") {
+                        restore(selected)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!workspace.canReopenConversation(id: selected.id))
+                    .help(workspace.canReopenConversation(id: selected.id)
+                        ? "恢复到聊天栏并聚焦该会话"
+                        : "当前未找到该历史记录对应的 Agent")
+                }
+                .padding(12)
+                Divider().opacity(0.4)
+
+                if let restoreError {
+                    Text(restoreError)
+                        .appFont(relative: -2)
+                        .foregroundStyle(.red)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 10)
+                }
+
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        ForEach(selected.messages) { message in
+                            if message.role == .assistant {
+                                MarkdownText(content: message.text)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            } else {
+                                Text(message.text)
+                                    .appFont()
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
+                            }
                         }
                     }
+                    .padding(16)
                 }
-                .padding(16)
             }
         } else {
             Text("选择左侧结果查看转录")
                 .appFont()
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private func restore(_ conversation: StoredConversation) {
+        switch workspace.reopenConversation(id: conversation.id) {
+        case .focusedExisting, .restored:
+            dismiss()
+        case .unavailable:
+            restoreError = "无法恢复：当前未找到 \(conversation.agentName)。"
         }
     }
 }

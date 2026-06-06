@@ -1,6 +1,12 @@
 import Foundation
 import Observation
 
+public enum ConversationReopenResult: Equatable, Sendable {
+    case focusedExisting
+    case restored
+    case unavailable
+}
+
 @MainActor
 @Observable
 public final class WorkspaceController {
@@ -305,6 +311,16 @@ public final class WorkspaceController {
         conversationStore.load(id: id)
     }
 
+    public func canReopenConversation(id: String) -> Bool {
+        if sessions.contains(where: { $0.id.uuidString == id }) {
+            return true
+        }
+        guard let stored = conversationStore.load(id: id) else {
+            return false
+        }
+        return registry.agents.contains { $0.id == stored.agentID }
+    }
+
     /// 基于 PermissionBroker 的默认决策闭包：普通进程放行，其余首次需确认。
     private static func makePermissionDecider() -> AgentSession.PermissionDecider {
         let broker = PermissionBroker()
@@ -400,14 +416,17 @@ public final class WorkspaceController {
 
     /// 点击 Recent：把一段历史会话重新打开为标签（沿用其 agent / 目录 / 聊天记录）并接焦点；
     /// 若它已在打开中则直接聚焦；对应 agent 已不存在则忽略。
-    public func reopenConversation(id: String) {
+    @discardableResult
+    public func reopenConversation(id: String) -> ConversationReopenResult {
         if let existing = sessions.first(where: { $0.id.uuidString == id }) {
             focusedSessionID = existing.id
             persist()
-            return
+            return .focusedExisting
         }
         guard let stored = conversationStore.load(id: id),
-              let agent = registry.agents.first(where: { $0.id == stored.agentID }) else { return }
+              let agent = registry.agents.first(where: { $0.id == stored.agentID }) else {
+            return .unavailable
+        }
         // 与 app 重启恢复（SessionSnapshot）一致地恢复续接状态：模型 / 推理强度 / 交互模式 /
         // 命令模式 / 后端会话 ID——这样重开后发消息仍续接原会话、保留模型上下文。
         let reasoningEffort = stored.reasoningEffort.flatMap { ReasoningEffort(rawValue: $0) } ?? .medium
@@ -435,6 +454,7 @@ public final class WorkspaceController {
         dismissedRecentIDs.remove(id) // 重新打开过 → 取消「已从最近移除」标记，关掉后可再次进入最近
         persist()
         refreshRecents()
+        return .restored
     }
 
     // MARK: - 广播（multiAgentMode）

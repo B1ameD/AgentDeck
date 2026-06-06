@@ -352,13 +352,59 @@ final class WorkspaceControllerTests: XCTestCase {
         controller.startNewChat(replacing: oldID)
         XCTAssertEqual(controller.recentConversations.map(\.id), [oldID.uuidString]) // 已在 Recent
 
-        controller.reopenConversation(id: oldID.uuidString)
+        let result = controller.reopenConversation(id: oldID.uuidString)
 
         // 重新成为活动标签：同 id、载回聊天记录、接焦点，并移出 Recent。
+        XCTAssertEqual(result, .restored)
+        XCTAssertTrue(controller.canReopenConversation(id: oldID.uuidString))
         XCTAssertTrue(controller.sessions.contains { $0.id == oldID })
         XCTAssertEqual(controller.focusedSessionID, oldID)
         XCTAssertEqual(controller.sessions.first { $0.id == oldID }?.messages.map(\.text), ["keep going"])
         XCTAssertFalse(controller.recentConversations.contains { $0.id == oldID.uuidString })
+    }
+
+    func testReopenConversationAlreadyOpenOnlyFocusesExistingSession() {
+        let controller = WorkspaceController(
+            registry: AgentRegistry(agents: [
+                makeAgent(id: "a", name: "A", command: "/bin/a"),
+                makeAgent(id: "b", name: "B", command: "/bin/b")
+            ]),
+            workingDirectory: URL(filePath: "/tmp/ws"),
+            initialPaneCount: 2
+        )
+        let first = controller.sessions[0]
+        controller.focusSession(id: controller.sessions[1].id)
+
+        let result = controller.reopenConversation(id: first.id.uuidString)
+
+        XCTAssertEqual(result, .focusedExisting)
+        XCTAssertEqual(controller.focusedSessionID, first.id)
+        XCTAssertEqual(controller.sessions.count, 2)
+        XCTAssertTrue(controller.canReopenConversation(id: first.id.uuidString))
+    }
+
+    func testReopenConversationReportsUnavailableWhenStoredAgentIsMissing() throws {
+        let convoDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: convoDir) }
+        let conversations = ConversationStore(directory: convoDir)
+        let conversationID = UUID().uuidString
+        try conversations.save(StoredConversation(
+            id: conversationID,
+            agentID: "removed-agent",
+            agentName: "Removed Agent",
+            workingDirectory: "/tmp/ws",
+            messages: [ChatMessage(role: .user, text: "restore me")],
+            updatedAt: Date()
+        ))
+        let controller = WorkspaceController(
+            registry: AgentRegistry(agents: [makeAgent(id: "a", name: "A", command: "/bin/a")]),
+            workingDirectory: URL(filePath: "/tmp/ws"),
+            conversationStore: conversations
+        )
+
+        XCTAssertFalse(controller.canReopenConversation(id: conversationID))
+        XCTAssertEqual(controller.reopenConversation(id: conversationID), .unavailable)
+        XCTAssertFalse(controller.sessions.contains { $0.id.uuidString == conversationID })
     }
 
     func testReopenConversationRestoresBackendSessionAndContinuityState() throws {
