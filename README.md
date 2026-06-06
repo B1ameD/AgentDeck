@@ -1,7 +1,7 @@
 # AgentDeck
 
 <p align="center">
-  <img src="icons/AppIcon.iconset/icon_256x256.png" width="128" alt="AgentDeck Icon">
+  <img src="icons/icon_256.png" width="128" alt="AgentDeck Icon">
 </p>
 
 <p align="center">
