@@ -1,13 +1,14 @@
-# History Restore, Diff Selection, Claude Login, And Build Mode Design
+# History Restore, Diff Selection, Claude Login, Build Mode, And Dynamic Models Design
 
 ## Goal
 
-Fix four related user-facing workflow problems:
+Fix five related user-facing workflow problems:
 
 1. A conversation selected in history search can be restored into the main chat workspace.
 2. Every historical "审核改动" action opens the diff stored on that specific message instead of the newest session diff.
 3. Claude Code users can complete official Anthropic OAuth login from AgentDeck.
 4. Claude interaction modes are reduced to `Plan` and `Build`, with old `chat` and `auto` state migrated to `build`.
+5. Claude's `/model` menu reflects the current cc-switch provider without leaving and reopening the Agent tab.
 
 ## Current Root Causes
 
@@ -28,6 +29,12 @@ The built-in Claude arguments also include `--bare`. Claude Code documents that 
 ### Chat mode cannot safely edit in non-interactive execution
 
 Claude `-p` cannot relay Claude's native permission prompt into AgentDeck. The current `chat` mode therefore reaches an edit request without a usable approval path. The existing `auto` mode already maps to `bypassPermissions`, but its name incorrectly implies that AgentDeck's own authorization is skipped.
+
+### Claude model state is loaded only when the composer is created
+
+`ComposerView` stores Claude's model candidates and role labels in local `@State`. Its model-loading task is keyed only by the working directory, so a cc-switch update to `~/.claude/settings.json` does not invalidate the current composer. Leaving and reopening the Agent tab recreates the view and happens to refresh the state.
+
+The Claude execution environment is already read through `AgentConfig.runtimeEnvironment()` for each request. The stale behavior is therefore limited to the visible `/model` menu and does not require restarting the Agent session.
 
 ## User Experience
 
@@ -65,6 +72,17 @@ claude auth login
 - The regular terminal toolbar action still opens a normal login shell.
 - The built-in Claude configuration removes `--bare`, allowing subsequent `-p` requests to use OAuth/keychain credentials.
 - Other agents continue treating `/login` as an ordinary native or passthrough command.
+
+### Refreshing Claude models after cc-switch
+
+- Entering Claude's `/model` state starts a fresh read of `~/.claude/settings.json`.
+- One model-menu session performs one read. Continuing to type `/model sonnet` only filters the loaded snapshot and does not repeatedly touch the file.
+- The refresh replaces both model candidates and role labels as one snapshot so provider names and labels cannot come from different settings versions.
+- The menu shows a compact loading row while the snapshot is refreshed.
+- If cc-switch changed providers, the old provider's candidates are removed before the refreshed list is shown.
+- If the file is missing or temporarily invalid during cc-switch's atomic write, the menu falls back to AgentDeck's built-in Claude aliases instead of retaining stale provider models.
+- No permanent filesystem watcher or manual refresh button is introduced.
+- OpenCode keeps its existing command-based catalog and cache behavior.
 
 ## Interaction Modes
 
@@ -153,6 +171,20 @@ Introduce a small terminal launch value that distinguishes:
 
 Add a dedicated Claude-login action to `SlashCommand.Action`. `ComposerView` invokes a callback supplied by `ChatPaneView` and `ContentView`, clears the command text, and does not append `/login` as a user chat message.
 
+When the composer transitions from a non-model slash state into Claude's model state, it clears the previous Claude catalog and launches a model snapshot refresh. Remaining inside the model state only updates filtering. Reopening `/model` after cc-switch performs another refresh without recreating the Agent tab.
+
+### `ClaudeSettings` and `ModelCatalog`
+
+Expose a single Claude model snapshot containing:
+
+- model candidates
+- role labels
+- the effective default model
+
+The snapshot is built from one parsed settings object. This avoids reading the file independently for `modelCandidates()` and `modelRoles()` and guarantees internally consistent menu data.
+
+`ModelCatalog` keeps the existing OpenCode cache. Claude snapshots are never served from that cache because cc-switch can replace their source file at any time.
+
 ## Error Handling
 
 - History restoration failure leaves the sheet open and explains that the original agent is unavailable.
@@ -160,6 +192,7 @@ Add a dedicated Claude-login action to `SlashCommand.Action`. `ComposerView` inv
 - If the Claude executable is unavailable, the login action is not offered because no Claude session can exist without the detected executable.
 - PTY process errors remain visible in the terminal panel.
 - Login completion does not automatically retry a previously failed prompt; the user deliberately resends it after authentication.
+- A failed Claude settings refresh clears stale provider-specific entries and uses built-in aliases. A later `/model` open retries automatically.
 
 ## Testing
 
@@ -195,8 +228,17 @@ Add a dedicated Claude-login action to `SlashCommand.Action`. `ComposerView` inv
 - Plan maps to Claude `plan`; Build maps to `bypassPermissions`.
 - Existing Codex, OpenCode, Pi, and custom command behavior remains unchanged.
 
+### Dynamic Claude models
+
+- A Claude model snapshot extracts candidates and role labels from one settings document.
+- Replacing the settings document changes the next snapshot without process restart.
+- Entering `/model` refreshes once; editing the query while the menu remains open does not trigger additional refreshes.
+- A successful refresh replaces an older provider's candidates and labels.
+- Missing or malformed settings produce an empty dynamic catalog, causing built-in Claude aliases to appear instead of stale entries.
+- OpenCode model caching remains unchanged.
+
 ### Regression verification
 
 - Run the complete Swift test suite.
 - Build the release application with `zsh Scripts/package_app.sh`.
-- Manually verify history restore, two historical diff selections, `/login`, and Plan/Build switching in the packaged app.
+- Manually verify history restore, two historical diff selections, `/login`, Plan/Build switching, and a cc-switch provider change followed by reopening `/model` in the same Agent tab.
