@@ -1,5 +1,16 @@
 import Foundation
 
+struct ChangeReviewRequest: Equatable, Sendable {
+    let summary: TurnDiffSummary
+
+    static func forMessage(_ message: ChatMessage) -> ChangeReviewRequest? {
+        guard message.kind == .changeReview, let summary = message.turnDiffSummary else {
+            return nil
+        }
+        return ChangeReviewRequest(summary: summary)
+    }
+}
+
 enum AssistantContentBlock: Equatable {
     case text(String)
     case thinking(String)

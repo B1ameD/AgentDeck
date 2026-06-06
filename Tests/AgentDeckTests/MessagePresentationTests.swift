@@ -2,6 +2,37 @@ import XCTest
 @testable import AgentDeckApp
 
 final class MessagePresentationTests: XCTestCase {
+    func testChangeReviewRequestUsesOnlyTheMessagesPersistedSummary() {
+        let oldSummary = TurnDiffSummary(workingDirectory: "/tmp/old", files: [])
+        let latestSummary = TurnDiffSummary(workingDirectory: "/tmp/latest", files: [])
+        let old = ChatMessage(
+            role: .system,
+            text: "old",
+            kind: .changeReview,
+            turnDiffSummary: oldSummary
+        )
+        let latest = ChatMessage(
+            role: .system,
+            text: "latest",
+            kind: .changeReview,
+            turnDiffSummary: latestSummary
+        )
+
+        XCTAssertEqual(ChangeReviewRequest.forMessage(old)?.summary, oldSummary)
+        XCTAssertEqual(ChangeReviewRequest.forMessage(latest)?.summary, latestSummary)
+    }
+
+    func testLegacyChangeReviewWithoutSummaryHasNoReviewRequest() {
+        let legacy = ChatMessage(
+            role: .system,
+            text: "改动文件：\n- old.swift",
+            fileLinks: ["old.swift"],
+            kind: .changeReview
+        )
+
+        XCTAssertNil(ChangeReviewRequest.forMessage(legacy))
+    }
+
     func testDetectsInlineLoginAndAPIError() {
         let text = #"Please run /login · API Error: 403 {"error":{"type":"new_api_error","message":"预扣费额度失败"},"type":"error"}"#
 

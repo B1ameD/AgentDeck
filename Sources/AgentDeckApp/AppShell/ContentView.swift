@@ -15,6 +15,7 @@ struct ContentView: View {
     @State private var sidebarMode: RightSidebarMode = .files
     @State private var sidebarSelectedFile: URL?
     @State private var sidebarBrowserURL: URL?
+    @State private var selectedReviewSummary: TurnDiffSummary?
 
     var body: some View {
         HStack(spacing: 14) {
@@ -25,6 +26,9 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .sheet(isPresented: $showingHistory) {
             HistorySearchView(workspace: workspace)
+        }
+        .onChange(of: workspace.focusedSessionID) { _, _ in
+            selectedReviewSummary = nil
         }
         .background(GlassBackground())
         .background(AppWindowConfigurator())
@@ -274,7 +278,8 @@ struct ContentView: View {
                                 sidebarMode = .browser
                                 withAnimation(.easeInOut(duration: 0.28)) { showFiles = true }
                             },
-                            onReviewChanges: {
+                            onReviewChanges: { summary in
+                                selectedReviewSummary = summary
                                 sidebarMode = .review
                                 withAnimation(.easeInOut(duration: 0.28)) { showFiles = true }
                             }
@@ -298,12 +303,20 @@ struct ContentView: View {
                 if showFiles {
                     RightSidebar(
                         workingDirectory: session.workingDirectory,
-                        mode: $sidebarMode,
+                        mode: Binding(
+                            get: { sidebarMode },
+                            set: { newMode in
+                                if newMode == .review, sidebarMode != .review {
+                                    selectedReviewSummary = nil
+                                }
+                                sidebarMode = newMode
+                            }
+                        ),
                         selectedFile: $sidebarSelectedFile,
                         browserURL: $sidebarBrowserURL,
                         topFraction: $sidebarTopFraction,
                         expandedFolders: $sidebarExpandedFolders,
-                        reviewSummary: session.lastTurnDiffSummary
+                        reviewSummary: selectedReviewSummary ?? session.lastTurnDiffSummary
                     ) {
                         withAnimation(.easeInOut(duration: 0.28)) { showFiles = false }
                     }

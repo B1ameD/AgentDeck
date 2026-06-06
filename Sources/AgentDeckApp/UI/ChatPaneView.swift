@@ -7,7 +7,7 @@ struct ChatPaneView: View {
     let onClose: () -> Void
     var onOpenFile: (URL) -> Void = { _ in }
     var onOpenWebURL: (URL) -> Void = { _ in }
-    var onReviewChanges: () -> Void = {} // 「审核改动」：打开右侧栏「审核」标签
+    var onReviewChanges: (TurnDiffSummary) -> Void = { _ in } // 「审核改动」：打开右侧栏「审核」标签
     @State private var composerMenuOpen = false // 菜单打开时聊天区显示透明遮罩，点击即关闭
 
     var body: some View {
@@ -19,9 +19,6 @@ struct ChatPaneView: View {
                         workingDirectory: session.workingDirectory,
                         // 流式输出中的那条 assistant 气泡先不检测散文文件名（避免逐分片重扫）；跑完转 true 重渲染一次。
                         detectFileReferences: message.id != streamingAssistantID,
-                        // 优先渲染消息持久化的结构化 diff；旧记录缺字段时，再用最新 session 状态兜底。
-                        turnDiff: message.turnDiffSummary
-                            ?? (message.id == latestChangeReviewID ? session.lastTurnDiffSummary : nil),
                         isStreaming: message.id == streamingAssistantID,
                         onOpenFile: onOpenFile,
                         onOpenWebURL: onOpenWebURL,
@@ -89,11 +86,6 @@ struct ChatPaneView: View {
         return session.messages.last(where: { $0.role == .assistant })?.id
     }
 
-    /// 最新一条「改动审核」消息 id——它对应 session.lastTurnDiffSummary（最近一轮的结构化 diff）。
-    private var latestChangeReviewID: ChatMessage.ID? {
-        session.messages.last(where: { $0.kind == .changeReview })?.id
-    }
-
     private var shouldShowThinkingIndicator: Bool {
         guard session.isRunning else { return false }
         guard let lastUserIndex = session.messages.lastIndex(where: { $0.role == .user }) else { return true }
@@ -144,11 +136,10 @@ private struct MessageBubble: View {
     let message: ChatMessage
     let workingDirectory: URL
     var detectFileReferences: Bool = true
-    var turnDiff: TurnDiffSummary? = nil
     var isStreaming = false
     let onOpenFile: (URL) -> Void
     let onOpenWebURL: (URL) -> Void
-    var onReviewChanges: () -> Void = {}
+    var onReviewChanges: (TurnDiffSummary) -> Void = { _ in }
     @State private var copied = false
     @State private var hovering = false
     @State private var hoverOffTask: Task<Void, Never>?
@@ -254,24 +245,41 @@ private struct MessageBubble: View {
                 Text("本轮改动 \(message.fileLinks.count) 个文件")
                     .appFont(relative: -1, weight: .semibold)
                 Spacer(minLength: 8)
-                Button(action: onReviewChanges) {
-                    Label("审核改动", systemImage: "arrow.left.arrow.right")
-                        .appFont(relative: -2, weight: .medium)
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 4)
-                        .background(Theme.accentSoft, in: Capsule())
-                        .foregroundStyle(Theme.accentStrong)
+                if let request = ChangeReviewRequest.forMessage(message) {
+                    Button {
+                        onReviewChanges(request.summary)
+                    } label: {
+                        reviewButtonLabel
+                    }
+                    .buttonStyle(.plain)
+                    .help("在右侧栏「审核」标签查看逐行 diff")
+                } else {
+                    Button(action: {}) {
+                        reviewButtonLabel
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(true)
+                    .help("此历史记录没有可用的逐行 Diff")
                 }
-                .buttonStyle(.plain)
-                .help("在右侧栏「审核」标签查看逐行 diff")
             }
             // 有本轮结构化 diff → 渲染有界内联卡片（Claude 风格）；否则回落到路径清单。
-            if let turnDiff, !turnDiff.isEmpty {
-                InlineDiffCardView(summary: turnDiff, onViewAll: onReviewChanges)
+            if let request = ChangeReviewRequest.forMessage(message), !request.summary.isEmpty {
+                InlineDiffCardView(summary: request.summary) {
+                    onReviewChanges(request.summary)
+                }
             } else if !changeListText.isEmpty {
                 MarkdownText(content: changeListText, linkContext: linkContext)
             }
         }
+    }
+
+    private var reviewButtonLabel: some View {
+        Label("审核改动", systemImage: "arrow.left.arrow.right")
+            .appFont(relative: -2, weight: .medium)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+            .background(Theme.accentSoft, in: Capsule())
+            .foregroundStyle(Theme.accentStrong)
     }
 
     /// 改动清单正文：去掉首行「改动文件：」标题（标题已由摘要头呈现），仅保留文件项。
