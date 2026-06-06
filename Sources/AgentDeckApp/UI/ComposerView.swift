@@ -19,6 +19,16 @@ struct ComposerModePresentation: Equatable {
     }
 }
 
+enum ModelMenuRefreshTrigger {
+    static func shouldRefresh(
+        agentKind: AgentConfig.Kind,
+        wasOpen: Bool,
+        isOpen: Bool
+    ) -> Bool {
+        agentKind == .claudeCode && !wasOpen && isOpen
+    }
+}
+
 struct ComposerView: View {
     @Bindable var session: AgentSession
     var workspace: WorkspaceController? = nil
@@ -35,6 +45,7 @@ struct ComposerView: View {
     /// 动态获取的模型列表（如 opencode models）；空则回落到内置预设。
     @State private var modelCatalog: [String] = []
     @State private var modelLoading = false
+    @State private var modelRefreshGeneration = 0
     /// claude settings.json 的「角色 → 模型」映射（Haiku/Sonnet/Opus/默认），给模型选择器打标签，
     /// 并提示「default 实际用 ANTHROPIC_MODEL（可能较重）」——对应慢的根因。
     @State private var claudeModelRoles = ClaudeSettings.ModelRoles(labels: [:], defaultModel: nil)
@@ -80,6 +91,13 @@ struct ComposerView: View {
         }
     }
 
+    private var modelMenuIsOpen: Bool {
+        if case .models = slashInput {
+            return true
+        }
+        return false
+    }
+
     /// Esc：菜单打开时清空斜杠输入以关闭（返回 true 表示已消费）。
     private func handleEscape() -> Bool {
         guard menuIsOpen else { return false }
@@ -109,6 +127,15 @@ struct ComposerView: View {
         .padding(.bottom, 6)
         .frame(maxWidth: .infinity) // 填满父布局给定的宽度（由 ProportionalWidthLayout 约束为 0.8 列宽并居中）
         .onChange(of: prompt) { _, _ in optimizeError = nil }
+        .onChange(of: modelMenuIsOpen) { wasOpen, isOpen in
+            if ModelMenuRefreshTrigger.shouldRefresh(
+                agentKind: session.agent.kind,
+                wasOpen: wasOpen,
+                isOpen: isOpen
+            ) {
+                startClaudeModelRefresh()
+            }
+        }
         .onChange(of: menuIsOpen) { _, open in
             if menuOpen != open { menuOpen = open }
         }
@@ -117,7 +144,9 @@ struct ComposerView: View {
         }
         .task(id: session.workingDirectory) {
             await discoverNativeCommands()
-            await fetchModelCatalog()
+            if session.agent.kind != .claudeCode {
+                await fetchModelCatalog()
+            }
         }
     }
 
@@ -176,10 +205,22 @@ struct ComposerView: View {
     private func fetchModelCatalog() async {
         modelLoading = true
         modelCatalog = await ModelCatalog.fetch(for: session.agent, workingDirectory: session.workingDirectory)
-        if session.agent.kind == .claudeCode {
-            claudeModelRoles = await Task.detached { ClaudeSettings.modelRoles() }.value
-        }
         modelLoading = false
+    }
+
+    private func startClaudeModelRefresh() {
+        modelRefreshGeneration += 1
+        let generation = modelRefreshGeneration
+        modelCatalog = []
+        claudeModelRoles = ClaudeSettings.ModelRoles(labels: [:], defaultModel: nil)
+        modelLoading = true
+        Task {
+            let snapshot = await ModelCatalog.fetchClaudeSnapshot()
+            guard generation == modelRefreshGeneration else { return }
+            modelCatalog = snapshot.candidates
+            claudeModelRoles = snapshot.roles
+            modelLoading = false
+        }
     }
 
     /// 控制行（参考 opencode）：模式 / 模型 / 推理 依次排列，分别用 Tab、/model、⌃T 切换；

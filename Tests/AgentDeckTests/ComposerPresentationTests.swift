@@ -2,6 +2,37 @@ import XCTest
 @testable import AgentDeckApp
 
 final class ComposerPresentationTests: XCTestCase {
+    func testClaudeModelRefreshOnlyTriggersWhenEnteringModelState() {
+        XCTAssertTrue(
+            ModelMenuRefreshTrigger.shouldRefresh(
+                agentKind: .claudeCode,
+                wasOpen: false,
+                isOpen: true
+            )
+        )
+        XCTAssertFalse(
+            ModelMenuRefreshTrigger.shouldRefresh(
+                agentKind: .claudeCode,
+                wasOpen: true,
+                isOpen: true
+            )
+        )
+        XCTAssertFalse(
+            ModelMenuRefreshTrigger.shouldRefresh(
+                agentKind: .claudeCode,
+                wasOpen: true,
+                isOpen: false
+            )
+        )
+        XCTAssertFalse(
+            ModelMenuRefreshTrigger.shouldRefresh(
+                agentKind: .openCode,
+                wasOpen: false,
+                isOpen: true
+            )
+        )
+    }
+
     func testBroadcastPresentationUsesSharedChatBoxCopy() {
         let chat = ComposerModePresentation(isBroadcast: false, targetCount: 1, agentName: "Claude")
         XCTAssertEqual(chat.placeholder, "Message Claude")

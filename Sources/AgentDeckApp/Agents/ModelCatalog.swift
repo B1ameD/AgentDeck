@@ -10,13 +10,21 @@ public enum ModelCatalog {
         runner: ProcessRunner = ProcessRunner()
     ) async -> [String] {
         if agent.kind == .claudeCode {
-            return await run(for: agent, workingDirectory: workingDirectory, runner: runner)
+            return await fetchClaudeSnapshot().candidates
         }
         // 缓存命中直接返回——opencode models 约 1.5s，避免每次切标签/开菜单都重跑。
         if let cached = await ModelCatalogCache.shared.get(agent.command) { return cached }
         let models = await run(for: agent, workingDirectory: workingDirectory, runner: runner)
         if !models.isEmpty { await ModelCatalogCache.shared.set(agent.command, models) }
         return models
+    }
+
+    public static func fetchClaudeSnapshot(
+        settingsURL: URL = ClaudeSettings.defaultSettingsURL
+    ) async -> ClaudeSettings.ModelSnapshot {
+        await Task.detached {
+            ClaudeSettings.modelSnapshot(settingsURL: settingsURL)
+        }.value
     }
 
     private static func run(
@@ -26,7 +34,7 @@ public enum ModelCatalog {
     ) async -> [String] {
         switch agent.kind {
         case .claudeCode:
-            return ClaudeSettings.modelCandidates()
+            return await fetchClaudeSnapshot().candidates
         case .openCode:
             guard let result = try? await runner.runOneShot(
                 command: agent.command,

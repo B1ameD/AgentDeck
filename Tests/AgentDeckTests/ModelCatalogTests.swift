@@ -2,6 +2,19 @@ import XCTest
 @testable import AgentDeckApp
 
 final class ModelCatalogTests: XCTestCase {
+    func testClaudeCatalogFetchReturnsAnUncachedSettingsSnapshot() async throws {
+        let settingsURL = try temporaryClaudeSettings(#"{"env":{"ANTHROPIC_MODEL":"old/model"}}"#)
+        defer { try? FileManager.default.removeItem(at: settingsURL.deletingLastPathComponent()) }
+
+        let first = await ModelCatalog.fetchClaudeSnapshot(settingsURL: settingsURL)
+        try #"{"env":{"ANTHROPIC_MODEL":"new/model"}}"#
+            .write(to: settingsURL, atomically: true, encoding: .utf8)
+        let second = await ModelCatalog.fetchClaudeSnapshot(settingsURL: settingsURL)
+
+        XCTAssertEqual(first.candidates, ["old/model"])
+        XCTAssertEqual(second.candidates, ["new/model"])
+    }
+
     func testClaudeSettingsExtractsEnvironmentAndModelNames() throws {
         let settingsURL = try temporaryClaudeSettings("""
         {

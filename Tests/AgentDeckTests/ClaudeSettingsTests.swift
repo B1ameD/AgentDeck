@@ -47,4 +47,53 @@ final class ClaudeSettingsModelRolesTests: XCTestCase {
         XCTAssertNil(roles.defaultModel)
         XCTAssertTrue(roles.labels.isEmpty)
     }
+
+    func testModelSnapshotKeepsCandidatesRolesAndDefaultConsistent() throws {
+        let url = try writeSettings(#"""
+        {
+          "env": {
+            "ANTHROPIC_MODEL": "provider/model-a",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": "provider/model-b"
+          },
+          "model": "provider/model-c"
+        }
+        """#)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let snapshot = ClaudeSettings.modelSnapshot(settingsURL: url)
+
+        XCTAssertEqual(snapshot.candidates, [
+            "provider/model-a",
+            "provider/model-b",
+            "provider/model-c"
+        ])
+        XCTAssertEqual(snapshot.roles.defaultModel, "provider/model-a")
+        XCTAssertEqual(snapshot.roles.labels["provider/model-a"], "默认")
+        XCTAssertEqual(snapshot.roles.labels["provider/model-b"], "Sonnet")
+    }
+
+    func testModelSnapshotReflectsReplacedProviderWithoutProcessRestart() throws {
+        let url = try writeSettings(#"{"env":{"ANTHROPIC_MODEL":"old/model"}}"#)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        XCTAssertEqual(ClaudeSettings.modelSnapshot(settingsURL: url).candidates, ["old/model"])
+
+        try #"{"env":{"ANTHROPIC_MODEL":"new/model","ANTHROPIC_DEFAULT_HAIKU_MODEL":"new/fast"}}"#
+            .write(to: url, atomically: true, encoding: .utf8)
+
+        let refreshed = ClaudeSettings.modelSnapshot(settingsURL: url)
+        XCTAssertEqual(refreshed.candidates, ["new/model", "new/fast"])
+        XCTAssertNil(refreshed.roles.labels["old/model"])
+    }
+
+    func testMalformedSettingsProduceAnEmptySnapshot() throws {
+        let url = try writeSettings("{not-json")
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let snapshot = ClaudeSettings.modelSnapshot(settingsURL: url)
+
+        XCTAssertTrue(snapshot.candidates.isEmpty)
+        XCTAssertTrue(snapshot.roles.labels.isEmpty)
+        XCTAssertNil(snapshot.roles.defaultModel)
+    }
 }

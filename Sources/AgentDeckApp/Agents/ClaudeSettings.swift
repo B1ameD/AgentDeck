@@ -29,8 +29,24 @@ public enum ClaudeSettings {
         }
     }
 
-    public static func modelRoles(settingsURL: URL = defaultSettingsURL) -> ModelRoles {
-        let env = (loadObject(settingsURL: settingsURL)?["env"] as? [String: Any])?.compactMapValues(stringValue) ?? [:]
+    public struct ModelSnapshot: Equatable, Sendable {
+        public var candidates: [String]
+        public var roles: ModelRoles
+
+        public init(candidates: [String], roles: ModelRoles) {
+            self.candidates = candidates
+            self.roles = roles
+        }
+    }
+
+    public static func modelSnapshot(settingsURL: URL = defaultSettingsURL) -> ModelSnapshot {
+        guard let object = loadObject(settingsURL: settingsURL) else {
+            return ModelSnapshot(
+                candidates: [],
+                roles: ModelRoles(labels: [:], defaultModel: nil)
+            )
+        }
+        let env = (object["env"] as? [String: Any])?.compactMapValues(stringValue) ?? [:]
         let defaultModel = normalized(env["ANTHROPIC_MODEL"])
         var labels: [String: String] = [:]
         func tag(_ model: String?, _ role: String) {
@@ -41,23 +57,29 @@ public enum ClaudeSettings {
         tag(normalized(env["ANTHROPIC_DEFAULT_SONNET_MODEL"]), "Sonnet")
         tag(normalized(env["ANTHROPIC_DEFAULT_OPUS_MODEL"]), "Opus")
         tag(defaultModel, "默认")
-        return ModelRoles(labels: labels, defaultModel: defaultModel)
-    }
 
-    public static func modelCandidates(settingsURL: URL = defaultSettingsURL) -> [String] {
-        guard let object = loadObject(settingsURL: settingsURL) else { return [] }
-        let env = (object["env"] as? [String: Any])?.compactMapValues(stringValue) ?? [:]
         let keys = [
             "ANTHROPIC_MODEL",
             "ANTHROPIC_DEFAULT_HAIKU_MODEL",
             "ANTHROPIC_DEFAULT_SONNET_MODEL",
             "ANTHROPIC_DEFAULT_OPUS_MODEL"
         ]
-        var values = keys.compactMap { normalized(env[$0]) }
+        var candidates = keys.compactMap { normalized(env[$0]) }
         if let model = normalized(stringValue(object["model"])) {
-            values.append(model)
+            candidates.append(model)
         }
-        return unique(values)
+        return ModelSnapshot(
+            candidates: unique(candidates),
+            roles: ModelRoles(labels: labels, defaultModel: defaultModel)
+        )
+    }
+
+    public static func modelRoles(settingsURL: URL = defaultSettingsURL) -> ModelRoles {
+        modelSnapshot(settingsURL: settingsURL).roles
+    }
+
+    public static func modelCandidates(settingsURL: URL = defaultSettingsURL) -> [String] {
+        modelSnapshot(settingsURL: settingsURL).candidates
     }
 
     private static func loadObject(settingsURL: URL) -> [String: Any]? {
