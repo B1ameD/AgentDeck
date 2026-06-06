@@ -21,27 +21,13 @@ final class CLIInvocationBuilderTests: XCTestCase {
         ))
     }
 
-    func testClaudeDefaultsInjectNoExtraFlags() {
-        let invocation = CLIInvocationBuilder.build(
-            agent: config(id: "claude-code", args: ["-p"], inputMode: .oneShotArgument),
-            prompt: "hi",
-            model: "default",
-            reasoningEffort: .medium,
-            interactionMode: .chat,
-            command: .new,
-            attachments: []
-        )
-
-        XCTAssertEqual(invocation, CLIInvocation(arguments: ["-p", "hi"], stdin: nil))
-    }
-
-    func testClaudeAutoModeBypassesPermissionsForNonInteractiveRuns() {
+    func testClaudeBuildModeBypassesPermissionsForNonInteractiveRuns() {
         let invocation = CLIInvocationBuilder.build(
             agent: config(id: "claude-code", args: ["-p"], inputMode: .oneShotArgument),
             prompt: "edit test.md",
             model: "default",
             reasoningEffort: .medium,
-            interactionMode: .auto,
+            interactionMode: .build,
             command: .new,
             attachments: []
         )
@@ -58,13 +44,16 @@ final class CLIInvocationBuilderTests: XCTestCase {
             prompt: "first",
             model: "default",
             reasoningEffort: .medium,
-            interactionMode: .chat,
+            interactionMode: .build,
             command: .new,
             attachments: [],
             sessionID: "11111111-2222-3333-4444-555555555555"
         )
 
-        XCTAssertEqual(invocation, CLIInvocation(arguments: ["-p", "first"], stdin: nil))
+        XCTAssertEqual(invocation, CLIInvocation(
+            arguments: ["-p", "--permission-mode", "bypassPermissions", "first"],
+            stdin: nil
+        ))
     }
 
     func testClaudeNewWithExternalSessionIDUsesNativeResume() {
@@ -73,7 +62,7 @@ final class CLIInvocationBuilderTests: XCTestCase {
             prompt: "second",
             model: "default",
             reasoningEffort: .medium,
-            interactionMode: .chat,
+            interactionMode: .build,
             command: .new,
             attachments: [],
             sessionID: "11111111-2222-3333-4444-555555555555",
@@ -81,7 +70,7 @@ final class CLIInvocationBuilderTests: XCTestCase {
         )
 
         XCTAssertEqual(invocation, CLIInvocation(
-            arguments: ["-p", "--resume", "claude-session-123", "second"],
+            arguments: ["-p", "--permission-mode", "bypassPermissions", "--resume", "claude-session-123", "second"],
             stdin: nil
         ))
     }
@@ -92,13 +81,13 @@ final class CLIInvocationBuilderTests: XCTestCase {
             prompt: "review",
             model: "default",
             reasoningEffort: .medium,
-            interactionMode: .chat,
+            interactionMode: .build,
             command: .new,
             attachments: [URL(filePath: "/tmp/a.txt")]
         )
 
         XCTAssertEqual(invocation, CLIInvocation(
-            arguments: ["-p", "review\n\n附件：\n@/tmp/a.txt"],
+            arguments: ["-p", "--permission-mode", "bypassPermissions", "review\n\n附件：\n@/tmp/a.txt"],
             stdin: nil
         ))
     }
@@ -109,12 +98,15 @@ final class CLIInvocationBuilderTests: XCTestCase {
             prompt: "go",
             model: "default",
             reasoningEffort: .medium,
-            interactionMode: .chat,
+            interactionMode: .build,
             command: .resume,
             attachments: [],
             resumeSessionID: "abc-123"
         )
-        XCTAssertEqual(invocation, CLIInvocation(arguments: ["-p", "--resume", "abc-123", "go"], stdin: nil))
+        XCTAssertEqual(invocation, CLIInvocation(
+            arguments: ["-p", "--permission-mode", "bypassPermissions", "--resume", "abc-123", "go"],
+            stdin: nil
+        ))
     }
 
     func testClaudeResumeWithoutSessionIDFallsBackToBareResume() {
@@ -123,11 +115,14 @@ final class CLIInvocationBuilderTests: XCTestCase {
             prompt: "go",
             model: "default",
             reasoningEffort: .medium,
-            interactionMode: .chat,
+            interactionMode: .build,
             command: .resume,
             attachments: []
         )
-        XCTAssertEqual(invocation, CLIInvocation(arguments: ["-p", "--resume", "go"], stdin: nil))
+        XCTAssertEqual(invocation, CLIInvocation(
+            arguments: ["-p", "--permission-mode", "bypassPermissions", "--resume", "go"],
+            stdin: nil
+        ))
     }
 
     // MARK: - OpenCode
@@ -138,7 +133,7 @@ final class CLIInvocationBuilderTests: XCTestCase {
             prompt: "go",
             model: "anthropic/claude",
             reasoningEffort: .low,
-            interactionMode: .chat,
+            interactionMode: .build,
             command: .resume,
             attachments: [URL(filePath: "/tmp/a.txt")]
         )
@@ -158,7 +153,7 @@ final class CLIInvocationBuilderTests: XCTestCase {
             prompt: "show your work",
             model: "default",
             reasoningEffort: .medium,
-            interactionMode: .chat,
+            interactionMode: .build,
             command: .new,
             attachments: []
         )
@@ -175,7 +170,7 @@ final class CLIInvocationBuilderTests: XCTestCase {
             prompt: "first",
             model: "default",
             reasoningEffort: .medium,
-            interactionMode: .chat,
+            interactionMode: .build,
             command: .new,
             attachments: [],
             conversationTitle: "AgentDeck window"
@@ -185,7 +180,7 @@ final class CLIInvocationBuilderTests: XCTestCase {
             prompt: "second",
             model: "default",
             reasoningEffort: .medium,
-            interactionMode: .chat,
+            interactionMode: .build,
             command: .new,
             attachments: [],
             externalSessionID: "ses_123",
@@ -203,11 +198,14 @@ final class CLIInvocationBuilderTests: XCTestCase {
                 prompt: "go",
                 model: "default",
                 reasoningEffort: effort,
-                interactionMode: .chat,
+                interactionMode: .build,
                 command: .new,
                 attachments: []
             )
-            XCTAssertEqual(invocation, CLIInvocation(arguments: ["-p", "--effort", raw, "go"], stdin: nil))
+            XCTAssertEqual(invocation, CLIInvocation(
+                arguments: ["-p", "--effort", raw, "--permission-mode", "bypassPermissions", "go"],
+                stdin: nil
+            ))
         }
     }
 
@@ -217,7 +215,7 @@ final class CLIInvocationBuilderTests: XCTestCase {
             prompt: "second",
             model: "default",
             reasoningEffort: .medium,
-            interactionMode: .chat,
+            interactionMode: .build,
             command: .new,
             attachments: [],
             externalSessionID: "thread_123"
@@ -236,7 +234,7 @@ final class CLIInvocationBuilderTests: XCTestCase {
                 prompt: "go",
                 model: "default",
                 reasoningEffort: effort,
-                interactionMode: .chat,
+                interactionMode: .build,
                 command: .new,
                 attachments: []
             )

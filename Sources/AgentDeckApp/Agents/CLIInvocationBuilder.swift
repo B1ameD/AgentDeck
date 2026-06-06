@@ -69,14 +69,12 @@ public enum CLIInvocationBuilder {
             args += ["--effort", effort.rawValue]
         }
         switch mode {
-        case .chat:
-            break // 默认权限模式
         case .plan:
             args += ["--permission-mode", "plan"]
-        case .auto:
+        case .build:
             // AgentDeck 以 `-p` 非交互方式运行 Claude Code，Claude 自己的审批提示
-            // 无法回传到我们的 SwiftUI 弹窗；Auto 在 AgentDeck 语义里表示用户已选择
-            // 让本轮自动执行，因此使用 Claude 的 bypassPermissions 模式。
+            // 无法回传到我们的 SwiftUI 弹窗；Build 仍经过 AgentDeck 自己的权限确认，
+            // 通过后使用 Claude 的 bypassPermissions 模式执行。
             args += ["--permission-mode", "bypassPermissions"]
         }
         switch command {
@@ -132,7 +130,7 @@ public enum CLIInvocationBuilder {
             // opencode 仅有 minimal/high 档；xhigh/max 一并夹到 high。
             args += ["--variant", "high"]
         }
-        // opencode run 无 permission-mode，plan/auto 暂不映射。
+        // opencode run 无 permission-mode，plan/build 暂不映射。
         switch command {
         case .new:
             if let id = normalized(externalSessionID) {

@@ -3,6 +3,45 @@ import XCTest
 
 @MainActor
 final class WorkspaceControllerTests: XCTestCase {
+    func testInteractionModesExposeOnlyPlanAndBuildAndMigrateLegacyValues() {
+        XCTAssertEqual(InteractionMode.allCases, [.plan, .build])
+        XCTAssertEqual(InteractionMode.restore("plan"), .plan)
+        XCTAssertEqual(InteractionMode.restore("build"), .build)
+        XCTAssertEqual(InteractionMode.restore("chat"), .build)
+        XCTAssertEqual(InteractionMode.restore("auto"), .build)
+        XCTAssertEqual(InteractionMode.restore("unknown"), .build)
+        XCTAssertEqual(InteractionMode.restore(nil), .build)
+    }
+
+    func testRestoredSessionsMigrateLegacyModesToBuild() {
+        let snapshots = [
+            ("plan", InteractionMode.plan),
+            ("build", InteractionMode.build),
+            ("chat", InteractionMode.build),
+            ("auto", InteractionMode.build),
+            ("unknown", InteractionMode.build)
+        ].map { stored, _ in
+            SessionSnapshot(
+                id: UUID().uuidString,
+                agentID: "a",
+                workingDirectory: "/tmp/workspace",
+                model: "default",
+                focused: false,
+                interactionMode: stored
+            )
+        }
+        let controller = WorkspaceController(
+            registry: AgentRegistry(agents: [makeAgent(id: "a", name: "A", command: "/bin/a")]),
+            workingDirectory: URL(filePath: "/tmp/workspace"),
+            restoreSessions: snapshots
+        )
+
+        XCTAssertEqual(
+            controller.sessions.map(\.interactionMode),
+            [.plan, .build, .build, .build, .build]
+        )
+    }
+
     func testInitialSessionsUseRegistryAgents() {
         let agents = [
             makeAgent(id: "claude-code", name: "Claude Code", command: "/usr/local/bin/claude"),
@@ -18,6 +57,7 @@ final class WorkspaceControllerTests: XCTestCase {
         XCTAssertEqual(controller.sessions.map(\.agent.command), ["/usr/local/bin/claude"])
         XCTAssertEqual(controller.focusedSession?.agent.id, "claude-code")
         XCTAssertEqual(controller.sessions.map(\.workingDirectory), [URL(filePath: "/tmp/workspace")])
+        XCTAssertEqual(controller.focusedSession?.interactionMode, .build)
     }
 
     func testInitialSessionFallsBackToNoAgentsMessageWhenRegistryIsEmpty() {

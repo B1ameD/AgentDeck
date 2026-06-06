@@ -35,9 +35,8 @@ public enum SlashCommandMenu {
         SlashCommand(token: "/continue", summary: "继续最近一次会话", action: .setCommand(.continueLast)),
         SlashCommand(token: "/compact", summary: "压缩当前上下文（透传给底层 CLI）", action: .passthrough),
         SlashCommand(token: "/model", summary: "切换模型（/model <名称>）", action: .startModelInput),
-        SlashCommand(token: "/chat", summary: "对话模式（默认权限）", action: .setMode(.chat)),
         SlashCommand(token: "/plan", summary: "计划模式（先规划、不改动）", action: .setMode(.plan)),
-        SlashCommand(token: "/auto", summary: "自动模式（跳过底层权限确认）", action: .setMode(.auto)),
+        SlashCommand(token: "/build", summary: "构建模式（经 AgentDeck 授权后可改动）", action: .setMode(.build)),
         SlashCommand(token: "/stop", summary: "停止当前正在运行的 agent", action: .stop),
         SlashCommand(token: "/clear", summary: "开新会话（旧对话留存历史检索）", action: .clear)
     ]
@@ -54,7 +53,7 @@ public enum SlashCommandMenu {
             // new/resume/continue 与 model：仅内置编码 agent（claude/codex/opencode）会注入对应 flag。
             return injectsBuiltInFlags(agent.kind)
         case .setMode:
-            // chat/plan/auto 映射 --permission-mode，目前仅 claude 支持。
+            // plan/build 映射 --permission-mode，目前仅 claude 支持。
             return agent.kind == .claudeCode
         case .stop:
             return agent.supportsStop

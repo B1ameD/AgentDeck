@@ -364,9 +364,8 @@ struct ComposerView: View {
 
     private var modeLabel: String {
         switch session.interactionMode {
-        case .chat: "Chat"
         case .plan: "Plan"
-        case .auto: "Auto"
+        case .build: "Build"
         }
     }
 

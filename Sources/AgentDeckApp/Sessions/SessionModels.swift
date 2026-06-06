@@ -112,9 +112,12 @@ public enum ReasoningEffort: String, CaseIterable, Equatable, Sendable {
 }
 
 public enum InteractionMode: String, CaseIterable, Equatable, Sendable {
-    case chat
     case plan
-    case auto
+    case build
+
+    public static func restore(_ storedValue: String?) -> InteractionMode {
+        storedValue == plan.rawValue ? .plan : .build
+    }
 }
 
 public enum AgentCommand: String, CaseIterable, Equatable, Sendable {

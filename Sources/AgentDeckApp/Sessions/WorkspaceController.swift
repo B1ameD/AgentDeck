@@ -62,7 +62,7 @@ public final class WorkspaceController {
                 let directory = snap.workingDirectory.map { URL(filePath: $0) }
                     ?? Self.resolveDirectory(for: agent, workspace: workspace)
                 let reasoningEffort = snap.reasoningEffort.flatMap { ReasoningEffort(rawValue: $0) } ?? .medium
-                let interactionMode = snap.interactionMode.flatMap { InteractionMode(rawValue: $0) } ?? .chat
+                let interactionMode = InteractionMode.restore(snap.interactionMode)
                 let command = snap.command.flatMap { AgentCommand(rawValue: $0) } ?? .new
                 return AgentSession(
                     id: UUID(uuidString: snap.id) ?? UUID(),
@@ -411,7 +411,7 @@ public final class WorkspaceController {
         // 与 app 重启恢复（SessionSnapshot）一致地恢复续接状态：模型 / 推理强度 / 交互模式 /
         // 命令模式 / 后端会话 ID——这样重开后发消息仍续接原会话、保留模型上下文。
         let reasoningEffort = stored.reasoningEffort.flatMap { ReasoningEffort(rawValue: $0) } ?? .medium
-        let interactionMode = stored.interactionMode.flatMap { InteractionMode(rawValue: $0) } ?? .chat
+        let interactionMode = InteractionMode.restore(stored.interactionMode)
         let command = stored.command.flatMap { AgentCommand(rawValue: $0) } ?? .new
         let session = AgentSession(
             id: UUID(uuidString: stored.id) ?? UUID(),

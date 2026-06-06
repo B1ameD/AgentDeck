@@ -174,7 +174,7 @@ public final class AgentSession: Identifiable {
         workingDirectory: URL,
         model: String = "default",
         reasoningEffort: ReasoningEffort = .medium,
-        interactionMode: InteractionMode = .chat,
+        interactionMode: InteractionMode = .build,
         command: AgentCommand = .new,
         customTitle: String? = nil,
         pinned: Bool = false,

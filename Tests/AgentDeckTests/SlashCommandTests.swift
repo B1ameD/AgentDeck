@@ -17,7 +17,8 @@ final class SlashCommandTests: XCTestCase {
 
     func testFiltersByTokenPrefix() {
         XCTAssertEqual(SlashCommandMenu.matches(for: "/pl")?.map(\.token), ["/plan"])
-        XCTAssertEqual(SlashCommandMenu.matches(for: "/c")?.map(\.token), ["/continue", "/compact", "/chat", "/clear"])
+        XCTAssertEqual(SlashCommandMenu.matches(for: "/b")?.map(\.token), ["/build"])
+        XCTAssertEqual(SlashCommandMenu.matches(for: "/c")?.map(\.token), ["/continue", "/compact", "/clear"])
     }
 
     func testSpaceEndsSlashMode() {
@@ -87,9 +88,9 @@ final class SlashCommandTests: XCTestCase {
     func testAvailableCommandsAreAgentSpecific() {
         XCTAssertEqual(
             SlashCommandMenu.availableCommands(for: agent(id: "claude-code")).map(\.token),
-            ["/new", "/resume", "/continue", "/compact", "/model", "/chat", "/plan", "/auto", "/stop", "/clear"]
+            ["/new", "/resume", "/continue", "/compact", "/model", "/plan", "/build", "/stop", "/clear"]
         )
-        // codex / opencode 没有 --permission-mode，去掉 chat/plan/auto。
+        // codex / opencode 没有 --permission-mode，去掉 plan/build。
         XCTAssertEqual(
             SlashCommandMenu.availableCommands(for: agent(id: "codex")).map(\.token),
             ["/new", "/resume", "/continue", "/compact", "/model", "/stop", "/clear"]
