@@ -16,21 +16,21 @@
 
 ---
 
-## ✨ 功能特性
+## 功能特性
 
 | 功能 | 描述 |
 |------|------|
-| 🖥️ **多标签工作台** | 同时运行多个 CLI Agent（Claude Code、Codex、OpenCode 等），每个 Agent 一个标签页 |
-| 📡 **广播模式** | 一条 Prompt 同时发送给所有 Agent，批量执行任务 |
-| 🔄 **会话恢复** | 退出后重新打开，自动恢复所有标签页和聊天记录 |
-| 📂 **文件浏览器** | 内置文件树 + 文本编辑器，支持查看和编辑项目文件 |
-| 🌐 **内置浏览器** | WebKit 浏览器，无需离开应用即可预览网页 |
-| 💻 **交互终端** | 基于 SwiftTerm 的完整终端，支持 vim、REPL 等交互程序 |
-| 🔀 **Git 集成** | 分支切换、文件暂存、提交，一站式 Git 操作 |
-| 🔐 **权限管理** | 文件修改操作需确认，支持"允许一次"或"记住" |
-| 🎨 **主题系统** | 支持浅色/深色模式，自定义界面字体和大小 |
+| **多标签工作台** | 同时运行多个 CLI Agent（Claude Code、Codex、OpenCode 等），每个 Agent 一个标签页 |
+| **广播模式** | 一条 Prompt 同时发送给所有 Agent，批量执行任务 |
+| **会话恢复** | 退出后重新打开，自动恢复所有标签页和聊天记录 |
+| **文件浏览器** | 内置文件树 + 文本编辑器，支持查看和编辑项目文件 |
+| **内置浏览器** | WebKit 浏览器，无需离开应用即可预览网页 |
+| **交互终端** | 基于 SwiftTerm 的完整终端，支持 vim、REPL 等交互程序 |
+| **Git 集成** | 分支切换、文件暂存、提交，一站式 Git 操作 |
+| **权限管理** | 文件修改操作需确认，支持"允许一次"或"记住" |
+| **主题系统** | 支持浅色/深色模式，自定义界面字体和大小 |
 
-## 🚀 快速开始
+## 快速开始
 
 ### 前置要求
 
@@ -41,11 +41,8 @@
 ### 安装
 
 ```bash
-# 克隆仓库
 git clone https://github.com/B1ameD/AgentDeck.git
 cd AgentDeck
-
-# 运行
 swift run AgentDeck
 ```
 
@@ -55,13 +52,7 @@ swift run AgentDeck
 ./Scripts/package_app.sh
 ```
 
-生成的 App 位于：
-
-```
-dist/AgentDeck.app
-```
-
-双击运行或拷贝到 `/Applications/` 目录。
+生成的 App 位于 `dist/AgentDeck.app`，双击运行或拷贝到 `/Applications/` 目录。
 
 ### 运行测试
 
@@ -69,15 +60,17 @@ dist/AgentDeck.app
 swift test
 ```
 
-## 🤖 支持的 Agent
+## 支持的 Agent
 
-| Agent | 命令 | 模型选择 | 推理强度 | 会话恢复 |
-|-------|------|---------|---------|---------|
-| **Claude Code** | `claude` | ✅ | ✅ 5 档 | ✅ |
-| **Codex** | `codex` | ✅ | ✅ | ✅ |
-| **OpenCode** | `opencode` | ✅ 动态获取 | ✅ | ✅ |
-| **Pi** | `pi` | ❌ | ❌ | ❌ |
-| **自定义** | JSON 配置 | 可选 | 可选 | 可选 |
+| Agent | 命令 | 模型选择 | 推理强度 | 会话恢复 | 状态 |
+|-------|------|---------|---------|---------|------|
+| **Claude Code** | `claude` | 支持 | 支持（5 档） | 支持 | 已完成 |
+| **Codex** | `codex` | 支持 | 支持 | 支持 | 开发中 |
+| **OpenCode** | `opencode` | 支持（动态获取） | 支持 | 支持 | 已完成 |
+| **Pi** | `pi` | 不支持 | 不支持 | 不支持 | 已完成 |
+| **自定义** | JSON 配置 | 可选 | 可选 | 可选 | 开发中 |
+
+> **备注**：Codex 集成与自定义 Agent 功能仍在开发中，具体支持范围可能发生变化。
 
 ### 自定义 Agent
 
@@ -98,7 +91,9 @@ swift test
 }
 ```
 
-## ⌨️ 快捷键与命令
+> 自定义 Agent 功能目前为基础框架，后续将完善配置校验与热加载机制。
+
+## 快捷键与命令
 
 | 命令 | 功能 |
 |------|------|
@@ -110,7 +105,7 @@ swift test
 | `Tab` | 切换 Agent 模式 |
 | `⌃T` | 切换推理强度 |
 
-## 📁 项目结构
+## 项目结构
 
 ```
 AgentDeck/
@@ -130,7 +125,7 @@ AgentDeck/
 └── Package.swift
 ```
 
-## 🤝 贡献
+## 贡献
 
 欢迎提交 Issue 和 Pull Request！
 
@@ -148,6 +143,6 @@ git commit -m "feat: add your feature"
 git push origin feature/your-feature
 ```
 
-## 📄 License
+## License
 
 MIT License
