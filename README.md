@@ -1,7 +1,7 @@
 # AgentDeck
 
 <p align="center">
-  <img src="icons/appicon_1024.png" width="128" alt="AgentDeck Icon">
+  <img src="https://raw.githubusercontent.com/B1ameD/AgentDeck/main/icons/appicon_1024.png" width="128" alt="AgentDeck Icon">
 </p>
 
 <p align="center">
