@@ -5,7 +5,7 @@ struct ContentView: View {
     @Bindable var workspace: WorkspaceController
     @Environment(\.openWindow) private var openWindow
     @State private var showingHistory = false
-    @State private var showTerminal = false
+    @State private var terminalLaunch: TerminalLaunch?
     @State private var showFiles = false
     @State private var sidebarWidth: CGFloat = 380 // 右侧栏宽度（可拖左缘横向缩放）
     @State private var sidebarDragBaseline: CGFloat? // 拖动起始宽度基准
@@ -261,7 +261,7 @@ struct ContentView: View {
                     VStack(spacing: 0) {
                         AgentPageHeader(
                             session: session,
-                            showTerminal: $showTerminal,
+                            terminalLaunch: $terminalLaunch,
                             showFiles: $showFiles
                         )
                         ChatPaneView(
@@ -282,14 +282,19 @@ struct ContentView: View {
                                 selectedReviewSummary = summary
                                 sidebarMode = .review
                                 withAnimation(.easeInOut(duration: 0.28)) { showFiles = true }
+                            },
+                            onClaudeLogin: {
+                                withAnimation(.easeInOut(duration: 0.28)) {
+                                    terminalLaunch = .claudeAuthentication(executable: session.agent.command)
+                                }
                             }
                         )
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                    if showTerminal {
-                        TerminalPanel(workingDirectory: session.workingDirectory) {
-                            withAnimation(.easeInOut(duration: 0.28)) { showTerminal = false }
+                    if let terminalLaunch {
+                        TerminalPanel(workingDirectory: session.workingDirectory, launch: terminalLaunch) {
+                            withAnimation(.easeInOut(duration: 0.28)) { self.terminalLaunch = nil }
                         }
                         .frame(height: 240)
                         .overlay(alignment: .top) {
@@ -590,7 +595,7 @@ private struct AgentTabRow: View {
 
 private struct AgentPageHeader: View {
     let session: AgentSession
-    @Binding var showTerminal: Bool
+    @Binding var terminalLaunch: TerminalLaunch?
     @Binding var showFiles: Bool
     @State private var showingGit = false
 
@@ -613,8 +618,10 @@ private struct AgentPageHeader: View {
             HeaderIconButton(systemImage: "sidebar.right", isActive: showFiles, help: "右侧栏：文件 / 浏览器") {
                 withAnimation(.easeInOut(duration: 0.28)) { showFiles.toggle() }
             }
-            HeaderIconButton(systemImage: "terminal", isActive: showTerminal, help: "终端（下方）") {
-                withAnimation(.easeInOut(duration: 0.28)) { showTerminal.toggle() }
+            HeaderIconButton(systemImage: "terminal", isActive: terminalLaunch != nil, help: "终端（下方）") {
+                withAnimation(.easeInOut(duration: 0.28)) {
+                    terminalLaunch = terminalLaunch == nil ? .shell() : nil
+                }
             }
         }
         .padding(.horizontal, 18)

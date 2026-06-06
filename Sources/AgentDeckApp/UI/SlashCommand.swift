@@ -7,6 +7,7 @@ public struct SlashCommand: Identifiable, Equatable, Sendable {
         case setMode(InteractionMode)
         case stop
         case clear
+        case claudeLogin
         /// 进入「输入模型名」态（/model 带参数），由 UI 切到模型建议菜单。
         case startModelInput
         /// 透传给底层 CLI 的原生指令（自定义命令 / 技能）：不拦截，原样作为 prompt 发送。
@@ -34,6 +35,7 @@ public enum SlashCommandMenu {
         SlashCommand(token: "/resume", summary: "恢复历史会话", action: .setCommand(.resume)),
         SlashCommand(token: "/continue", summary: "继续最近一次会话", action: .setCommand(.continueLast)),
         SlashCommand(token: "/compact", summary: "压缩当前上下文（透传给底层 CLI）", action: .passthrough),
+        SlashCommand(token: "/login", summary: "登录 Claude 官方账号", action: .claudeLogin),
         SlashCommand(token: "/model", summary: "切换模型（/model <名称>）", action: .startModelInput),
         SlashCommand(token: "/plan", summary: "计划模式（先规划、不改动）", action: .setMode(.plan)),
         SlashCommand(token: "/build", summary: "构建模式（经 AgentDeck 授权后可改动）", action: .setMode(.build)),
@@ -54,6 +56,8 @@ public enum SlashCommandMenu {
             return injectsBuiltInFlags(agent.kind)
         case .setMode:
             // plan/build 映射 --permission-mode，目前仅 claude 支持。
+            return agent.kind == .claudeCode
+        case .claudeLogin:
             return agent.kind == .claudeCode
         case .stop:
             return agent.supportsStop

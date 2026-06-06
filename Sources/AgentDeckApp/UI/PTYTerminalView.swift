@@ -1,14 +1,30 @@
 import SwiftUI
 import SwiftTerm
 
+struct TerminalLaunch: Equatable, Sendable {
+    let executable: String
+    let arguments: [String]
+    let title: String
+
+    static func shell(
+        executable: String = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+    ) -> TerminalLaunch {
+        TerminalLaunch(executable: executable, arguments: ["-l"], title: "终端")
+    }
+
+    static func claudeAuthentication(executable: String) -> TerminalLaunch {
+        TerminalLaunch(executable: executable, arguments: ["auth", "login"], title: "Claude 登录")
+    }
+}
+
 /// 真·PTY 终端：用 SwiftTerm 的 LocalProcessTerminalView 在工作目录里起一个登录 shell。
 /// 与命令终端不同，这是带伪终端的交互式 shell——cd / 环境跨命令保留，可跑 vim、REPL 等。
 struct PTYTerminalView: NSViewRepresentable {
     let workingDirectory: URL
+    let launch: TerminalLaunch
 
     func makeNSView(context: Context) -> NSView {
         let terminal = LocalProcessTerminalView(frame: .zero)
-        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
 
         // 透传当前环境并确保 TERM 合理，让 PATH（含 claude/codex 等）可用。
         var environment = ProcessInfo.processInfo.environment
@@ -16,8 +32,8 @@ struct PTYTerminalView: NSViewRepresentable {
         let envArray = environment.map { "\($0.key)=\($0.value)" }
 
         terminal.startProcess(
-            executable: shell,
-            args: ["-l"], // 登录 shell：加载用户 PATH 等配置
+            executable: launch.executable,
+            args: launch.arguments,
             environment: envArray,
             currentDirectory: workingDirectory.path
         )
@@ -46,12 +62,13 @@ struct PTYTerminalView: NSViewRepresentable {
 /// 终端视图会抢走键盘（Esc/⌘W 都被送进 shell），所以给一个可点击的关闭按钮。
 struct TerminalPanel: View {
     let workingDirectory: URL
+    let launch: TerminalLaunch
     var onClose: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Label("终端", systemImage: "terminal").appFont(relative: -1, weight: .semibold)
+                Label(launch.title, systemImage: "terminal").appFont(relative: -1, weight: .semibold)
                 Text(workingDirectory.lastPathComponent).appFont(relative: -2).foregroundStyle(.secondary)
                 Spacer()
                 Button { onClose() } label: { Image(systemName: "xmark").font(.caption) }
@@ -62,8 +79,8 @@ struct TerminalPanel: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             Divider().opacity(0.4)
-            PTYTerminalView(workingDirectory: workingDirectory)
-                .id(workingDirectory) // 切到不同工作目录时重建终端（新 shell 在新目录）
+            PTYTerminalView(workingDirectory: workingDirectory, launch: launch)
+                .id("\(workingDirectory.path)|\(launch.executable)|\(launch.arguments.joined(separator: "\u{1F}"))")
         }
         .background(.thinMaterial)
     }

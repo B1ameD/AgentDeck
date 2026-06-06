@@ -22,6 +22,7 @@ struct ComposerModePresentation: Equatable {
 struct ComposerView: View {
     @Bindable var session: AgentSession
     var workspace: WorkspaceController? = nil
+    var onClaudeLogin: () -> Void = {}
     /// 与父级（ChatPaneView 聊天区遮罩）同步「斜杠/模型菜单是否打开」：
     /// ComposerView 置真打开，父级遮罩点击会置假以请求关闭。
     @Binding var menuOpen: Bool
@@ -600,6 +601,8 @@ struct ComposerView: View {
             prompt = ""
             attachments = []
             return
+        case .claudeLogin:
+            onClaudeLogin()
         case .startModelInput:
             prompt = "/model" // 进入模型输入态：菜单切到模型建议；不清空
             return

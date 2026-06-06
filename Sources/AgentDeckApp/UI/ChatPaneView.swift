@@ -8,6 +8,7 @@ struct ChatPaneView: View {
     var onOpenFile: (URL) -> Void = { _ in }
     var onOpenWebURL: (URL) -> Void = { _ in }
     var onReviewChanges: (TurnDiffSummary) -> Void = { _ in } // 「审核改动」：打开右侧栏「审核」标签
+    var onClaudeLogin: () -> Void = {}
     @State private var composerMenuOpen = false // 菜单打开时聊天区显示透明遮罩，点击即关闭
 
     var body: some View {
@@ -58,7 +59,12 @@ struct ChatPaneView: View {
             // 用布局把聊天框约束为列宽的 0.8 并居中：宽度在布局阶段计算，
             // 故侧栏开/关导致列宽变化时，聊天框与侧栏在同一动画事务里平滑跟随（不再瞬移）。
             ProportionalWidthLayout(fraction: 0.8) {
-                ComposerView(session: session, workspace: workspace, menuOpen: $composerMenuOpen)
+                ComposerView(
+                    session: session,
+                    workspace: workspace,
+                    onClaudeLogin: onClaudeLogin,
+                    menuOpen: $composerMenuOpen
+                )
             }
         }
         .confirmationDialog(

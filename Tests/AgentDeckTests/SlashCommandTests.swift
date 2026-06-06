@@ -56,6 +56,26 @@ final class SlashCommandTests: XCTestCase {
         )
     }
 
+    func testClaudeLoginIsHandledByTheApplicationOnlyForClaude() {
+        let login = SlashCommandMenu.all.first { $0.token == "/login" }
+
+        XCTAssertEqual(login?.action, .claudeLogin)
+        XCTAssertEqual(
+            SlashCommandMenu.resolve(for: "/login", agent: agent(id: "claude-code")),
+            .commands([login].compactMap { $0 })
+        )
+        XCTAssertEqual(
+            SlashCommandMenu.resolve(for: "/login", agent: agent(id: "codex")),
+            .commands([
+                SlashCommand(
+                    token: "/login",
+                    summary: "发送给 codex（CLI 指令，透传）",
+                    action: .passthrough
+                )
+            ])
+        )
+    }
+
     func testResolveEntersModelModeAtFullTokenAndWithArgument() {
         // "/model"（无空格）即进入模型态，给出该 agent 的预设建议。
         XCTAssertEqual(
@@ -88,7 +108,7 @@ final class SlashCommandTests: XCTestCase {
     func testAvailableCommandsAreAgentSpecific() {
         XCTAssertEqual(
             SlashCommandMenu.availableCommands(for: agent(id: "claude-code")).map(\.token),
-            ["/new", "/resume", "/continue", "/compact", "/model", "/plan", "/build", "/stop", "/clear"]
+            ["/new", "/resume", "/continue", "/compact", "/login", "/model", "/plan", "/build", "/stop", "/clear"]
         )
         // codex / opencode 没有 --permission-mode，去掉 plan/build。
         XCTAssertEqual(

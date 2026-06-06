@@ -77,7 +77,7 @@ final class AgentRegistryTests: XCTestCase {
         XCTAssertEqual(presets.first?.command, "/usr/local/bin/claude")
         XCTAssertEqual(
             presets.first(where: { $0.id == "claude-code" })?.args,
-            ["-p", "--bare", "--output-format", "stream-json", "--verbose", "--include-partial-messages"]
+            ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages"]
         )
         XCTAssertEqual(presets.first(where: { $0.id == "claude-code" })?.inputMode, .oneShotArgument)
         XCTAssertEqual(presets.first(where: { $0.id == "claude-code" })?.outputMode, .jsonLines)

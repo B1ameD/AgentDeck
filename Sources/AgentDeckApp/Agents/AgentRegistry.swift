@@ -36,7 +36,7 @@ public struct AgentRegistry: Equatable {
                 "claude-code",
                 "Claude Code",
                 "claude",
-                ["-p", "--bare", "--output-format", "stream-json", "--verbose", "--include-partial-messages"],
+                ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages"],
                 .oneShotArgument,
                 .jsonLines
             ),
