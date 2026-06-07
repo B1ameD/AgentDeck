@@ -13,6 +13,8 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
     public enum Kind: String, Equatable, Sendable, Codable {
         case normal
         case changeReview
+        /// AskUserQuestion 卡片消息：payload 在 `question`，UI 渲染成可点选项，选完作为下一轮发出。
+        case question
     }
 
     public let id: UUID
@@ -23,6 +25,11 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
     public var toolCalls: [String]
     public var kind: Kind
     public var turnDiffSummary: TurnDiffSummary?
+    /// AskUserQuestion 卡片的结构化问题（kind == .question 时非空）。
+    public var question: AskUserQuestion?
+    /// 本条消息里「委派任务」(Task/Agent 子代理) 的明细：派发的类型/描述/prompt 与子代理返回的最终结果。
+    /// 内联「委派任务」行据 id 链接到这里，点击在右侧栏展开。
+    public var subagentTasks: [SubagentTask]
     /// 本轮 agent 运行起止时间。仅 assistant 输出消息使用；旧历史记录为空。
     public var runStartedAt: Date?
     public var runEndedAt: Date?
@@ -36,6 +43,8 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
         toolCalls: [String] = [],
         kind: Kind = .normal,
         turnDiffSummary: TurnDiffSummary? = nil,
+        question: AskUserQuestion? = nil,
+        subagentTasks: [SubagentTask] = [],
         runStartedAt: Date? = nil,
         runEndedAt: Date? = nil
     ) {
@@ -47,6 +56,8 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
         self.toolCalls = toolCalls
         self.kind = kind
         self.turnDiffSummary = turnDiffSummary
+        self.question = question
+        self.subagentTasks = subagentTasks
         self.runStartedAt = runStartedAt
         self.runEndedAt = runEndedAt
     }
@@ -60,6 +71,8 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
         case toolCalls
         case kind
         case turnDiffSummary
+        case question
+        case subagentTasks
         case runStartedAt
         case runEndedAt
     }
@@ -74,8 +87,60 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
         toolCalls = try container.decodeIfPresent([String].self, forKey: .toolCalls) ?? []
         kind = try container.decodeIfPresent(Kind.self, forKey: .kind) ?? .normal
         turnDiffSummary = try container.decodeIfPresent(TurnDiffSummary.self, forKey: .turnDiffSummary)
+        question = try container.decodeIfPresent(AskUserQuestion.self, forKey: .question)
+        subagentTasks = try container.decodeIfPresent([SubagentTask].self, forKey: .subagentTasks) ?? []
         runStartedAt = try container.decodeIfPresent(Date.self, forKey: .runStartedAt)
         runEndedAt = try container.decodeIfPresent(Date.self, forKey: .runEndedAt)
+    }
+}
+
+/// 一次「委派任务」(Claude 的 Task/Agent、opencode 的 task) 的明细。
+/// Claude 的 headless 输出**不暴露**子代理的逐步内部对话，只能拿到：派发内容（类型/描述/prompt）+ 子代理最终结果。
+public struct SubagentTask: Equatable, Sendable, Codable, Identifiable {
+    public var id: String          // 对应 Task 工具调用的 tool_use id
+    public var agentType: String   // subagent_type（如 Explore / general-purpose）
+    public var taskDescription: String
+    public var prompt: String
+    public var result: String?     // 子代理最终结果（tool_result 到达后填入）；nil = 进行中
+    public var isError: Bool
+
+    public init(id: String, agentType: String, taskDescription: String, prompt: String, result: String? = nil, isError: Bool = false) {
+        self.id = id
+        self.agentType = agentType
+        self.taskDescription = taskDescription
+        self.prompt = prompt
+        self.result = result
+        self.isError = isError
+    }
+
+    /// 行内展示标签：「类型 · 描述」，缺类型时只用描述。
+    public var rowLabel: String {
+        let desc = taskDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        let type = agentType.trimmingCharacters(in: .whitespacesAndNewlines)
+        if type.isEmpty { return desc.isEmpty ? "子任务" : desc }
+        return desc.isEmpty ? type : "\(type) · \(desc)"
+    }
+}
+
+/// 「委派任务」内联行的标记编码：把子任务 id 藏进工具标记里（不展示），
+/// 让展示层据 id 链接到 message.subagentTasks，从而点击行可在右侧栏展开明细。
+public enum SubagentMarker {
+    private static let prefix = "\u{1F}sub\u{1F}"
+
+    /// 编码成工具摘要：`<US>sub<US><id><US><label>`。
+    public static func encode(id: String, label: String) -> String {
+        prefix + id + "\u{1F}" + label
+    }
+
+    /// 从工具摘要解出 (id, label)；非子任务摘要返回 nil。
+    public static func decode(_ summary: String) -> (id: String, label: String)? {
+        guard summary.hasPrefix(prefix) else { return nil }
+        let rest = summary.dropFirst(prefix.count)
+        guard let sep = rest.firstIndex(of: "\u{1F}") else { return nil }
+        let id = String(rest[..<sep])
+        let label = String(rest[rest.index(after: sep)...])
+        guard !id.isEmpty else { return nil }
+        return (id, label)
     }
 }
 

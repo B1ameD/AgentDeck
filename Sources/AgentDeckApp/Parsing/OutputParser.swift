@@ -6,6 +6,10 @@ public struct OutputEvent: Equatable, Sendable {
         case status
         case tool
         case error
+        /// AskUserQuestion 工具调用。text 为该工具的 input JSON（含 questions），由会话层解析成可点选卡片。
+        case question
+        /// 委派任务（Task/Agent 子代理）。text 为 JSON：派发态 {id,agentType,description,prompt} 或结果态 {id,result,isError,done}。
+        case subagent
     }
 
     public var kind: Kind
@@ -26,8 +30,10 @@ public final class OutputParser {
     /// 流式中的工具调用：start 时记下工具名、delta 累积 input JSON、stop 时汇成一行紧凑摘要。
     /// 只摘要「工具调用」（如读了哪个文件），不把庞大的工具结果灌进聊天——避免刷屏。
     private var pendingToolName: String?
+    private var pendingToolID: String?       // 当前工具块的 tool_use id（委派任务据此匹配后续 tool_result）
     private var pendingToolInput = ""        // 来自 input_json_delta 的分片累积
     private var pendingToolStartInput = ""   // content_block_start 自带的完整 input（部分实现一次性给出）
+    private var subagentToolIDs: Set<String> = [] // 已识别的「委派任务」工具 id，用于匹配其 tool_result（结果）
 
     public init(mode: AgentConfig.OutputMode) {
         self.mode = mode
@@ -126,14 +132,22 @@ public final class OutputParser {
             return nil
         case "user":
             // Claude 的工具结果以顶层 {"type":"user", content:[{type:"tool_result", content:"..."}]} 回灌，
-            // 内容可能极大（文件全文 / 命令输出）。**不**把它当普通文本灌进聊天（否则刷屏）——
-            // 工具调用已由 content_block_start 的 tool_use 摘要过；这里仅在工具报错时给一行紧凑提示。
+            // 内容可能极大（文件全文 / 命令输出）。**不**把它当普通文本灌进聊天（否则刷屏）。
+            // 委派任务的结果是要展示的明细：匹配到已记下的子代理 id 就上抛结果；否则仅在报错时给一行紧凑提示。
+            if let event = subagentResultEvent(in: object) { return event }
             return Self.toolResultError(in: object).map { OutputEvent(kind: .tool, text: $0) }
         case "tool_use":
             // OpenCode `run --format json` 在工具完成/失败时输出：
             // {"type":"tool_use","part":{"type":"tool","tool":"read","state":{...}}}
             // 同样只展示调用摘要，不把 output 灌进聊天。
             return Self.openCodeToolEvent(in: object)
+        case "question":
+            // opencode 的提问：整条上抛（含 requestID 与 input.questions），由会话层解析成卡片，并据 requestID 回传答案。
+            if let data = try? JSONSerialization.data(withJSONObject: object),
+               let json = String(data: data, encoding: .utf8) {
+                return OutputEvent(kind: .question, text: json)
+            }
+            return nil
         case "thread.started", "thread.completed", "turn.started", "turn.completed", "step_start", "step_finish":
             return nil
         case "item.completed":
@@ -178,6 +192,7 @@ public final class OutputParser {
                 // 工具调用开始：记下工具名；input 通常是空占位 {}（真正参数走 input_json_delta），
                 // 但少数实现会在此一次性给出完整 input——分开存，stop 时优先用分片累积、否则回落 start。
                 pendingToolName = (block["name"] as? String) ?? "工具"
+                pendingToolID = block["id"] as? String
                 pendingToolInput = ""
                 pendingToolStartInput = ""
                 if let input = block["input"] as? [String: Any], !input.isEmpty,
@@ -207,11 +222,22 @@ public final class OutputParser {
         case "content_block_stop":
             guard let name = pendingToolName else { return nil }
             let inputJSON = pendingToolInput.isEmpty ? pendingToolStartInput : pendingToolInput
-            let summary = Self.toolSummary(name: name, inputJSON: inputJSON)
+            let toolID = pendingToolID
             pendingToolName = nil
+            pendingToolID = nil
             pendingToolInput = ""
             pendingToolStartInput = ""
-            return OutputEvent(kind: .tool, text: summary)
+            // AskUserQuestion 是「问用户」的交互工具：不压成一行活动摘要，而是把 input JSON 原样上抛，
+            // 由会话层解析成可点选卡片（见 AskUserQuestionParser / AgentSession）。
+            if AskUserQuestionParser.isAskUserQuestion(toolName: name) {
+                return OutputEvent(kind: .question, text: inputJSON)
+            }
+            // 委派任务（Task/Agent）：上抛结构化派发信息（id/类型/描述/prompt），并记下 id 以便匹配其结果。
+            if Self.isSubagentTool(name), let toolID, let event = Self.subagentDelegationEvent(id: toolID, inputJSON: inputJSON) {
+                subagentToolIDs.insert(toolID)
+                return event
+            }
+            return OutputEvent(kind: .tool, text: Self.toolSummary(name: name, inputJSON: inputJSON))
         default:
             return nil
         }
@@ -323,6 +349,50 @@ public final class OutputParser {
             inputJSON = ""
         }
         return OutputEvent(kind: .tool, text: toolSummary(name: name, inputJSON: inputJSON))
+    }
+
+    /// 工具名是否为「委派任务」(Task/Agent 子代理)。与 actionVerb 的「委派任务」集对齐。
+    static func isSubagentTool(_ name: String) -> Bool {
+        switch name.lowercased() {
+        case "task", "agent", "dispatch", "dispatch_agent", "subagent": return true
+        default: return false
+        }
+    }
+
+    /// 从 Task 工具的 input 构造「派发态」委派事件（id/类型/描述/prompt）。input 解析失败也发空壳，保证行能出现。
+    static func subagentDelegationEvent(id: String, inputJSON: String) -> OutputEvent? {
+        let object = (inputJSON.data(using: .utf8)).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+        let payload: [String: Any] = [
+            "id": id,
+            "agentType": (object["subagent_type"] as? String) ?? (object["subagentType"] as? String) ?? "",
+            "description": (object["description"] as? String) ?? "",
+            "prompt": (object["prompt"] as? String) ?? ""
+        ]
+        return subagentEvent(payload)
+    }
+
+    /// 把某条 user 消息里命中已知子代理 id 的 tool_result 转成「结果态」委派事件。
+    private func subagentResultEvent(in object: [String: Any]) -> OutputEvent? {
+        guard !subagentToolIDs.isEmpty,
+              let message = object["message"] as? [String: Any],
+              let content = message["content"] as? [Any] else { return nil }
+        for case let block as [String: Any] in content where (block["type"] as? String) == "tool_result" {
+            guard let id = block["tool_use_id"] as? String, subagentToolIDs.contains(id) else { continue }
+            let payload: [String: Any] = [
+                "id": id,
+                "result": Self.messageTextValue(block["content"]) ?? "",
+                "isError": (block["is_error"] as? Bool) == true,
+                "done": true
+            ]
+            return Self.subagentEvent(payload)
+        }
+        return nil
+    }
+
+    private static func subagentEvent(_ payload: [String: Any]) -> OutputEvent? {
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let json = String(data: data, encoding: .utf8) else { return nil }
+        return OutputEvent(kind: .subagent, text: json)
     }
 
     /// 工具结果（tool_result）若标了 is_error，抽出一行紧凑错误提示；否则 nil（正常结果丢弃、不刷屏）。

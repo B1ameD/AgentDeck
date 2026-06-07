@@ -11,15 +11,17 @@ struct ResizeDivider: NSViewRepresentable {
     var onBegan: () -> Void
     var onChanged: (CGFloat) -> Void
     var onEnded: () -> Void
+    /// 双击：恢复默认宽度（参考 Codex 分隔条双击复位）。可选。
+    var onDoubleClick: (() -> Void)? = nil
 
     func makeNSView(context: Context) -> ResizeDividerNSView {
         let view = ResizeDividerNSView()
-        view.configure(axis: axis, onBegan: onBegan, onChanged: onChanged, onEnded: onEnded)
+        view.configure(axis: axis, onBegan: onBegan, onChanged: onChanged, onEnded: onEnded, onDoubleClick: onDoubleClick)
         return view
     }
 
     func updateNSView(_ nsView: ResizeDividerNSView, context: Context) {
-        nsView.configure(axis: axis, onBegan: onBegan, onChanged: onChanged, onEnded: onEnded)
+        nsView.configure(axis: axis, onBegan: onBegan, onChanged: onChanged, onEnded: onEnded, onDoubleClick: onDoubleClick)
     }
 }
 
@@ -28,6 +30,7 @@ final class ResizeDividerNSView: NSView {
     private var onBegan: (() -> Void)?
     private var onChanged: ((CGFloat) -> Void)?
     private var onEnded: (() -> Void)?
+    private var onDoubleClick: (() -> Void)?
 
     private var start: CGFloat = 0
 
@@ -35,12 +38,14 @@ final class ResizeDividerNSView: NSView {
         axis: ResizeDivider.Axis,
         onBegan: @escaping () -> Void,
         onChanged: @escaping (CGFloat) -> Void,
-        onEnded: @escaping () -> Void
+        onEnded: @escaping () -> Void,
+        onDoubleClick: (() -> Void)? = nil
     ) {
         self.axis = axis
         self.onBegan = onBegan
         self.onChanged = onChanged
         self.onEnded = onEnded
+        self.onDoubleClick = onDoubleClick
         window?.invalidateCursorRects(for: self)
     }
 
@@ -52,6 +57,11 @@ final class ResizeDividerNSView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        // 双击复位：不进入拖拽流程。
+        if event.clickCount == 2, let onDoubleClick {
+            onDoubleClick()
+            return
+        }
         let p = event.locationInWindow
         start = axis == .horizontal ? p.x : p.y
         onBegan?()

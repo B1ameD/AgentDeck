@@ -88,6 +88,20 @@ final class ModelCatalogTests: XCTestCase {
         )
     }
 
+    func testClaudeSuggestionsAlwaysIncludeVersionPresetsEvenWithCatalog() {
+        // 官方登录时 settings.json 常只暴露一个别名（如 "opus"）。即便目录非空，也要并入内置
+        // 版本全名，保证用户仍能看到/选到具体版本（如 claude-opus-4-8），而非只剩一个 "opus"。
+        XCTAssertEqual(
+            SlashCommandMenu.modelSuggestions(for: .claudeCode, query: "", catalog: ["opus"]),
+            ["default", "opus", "sonnet", "haiku", "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"]
+        )
+        // 目录里已是具体版本时不重复，且保持「目录在前、预设在后」的顺序。
+        XCTAssertEqual(
+            SlashCommandMenu.modelSuggestions(for: .claudeCode, query: "opus", catalog: ["claude-opus-4-8"]),
+            ["claude-opus-4-8", "opus"]
+        )
+    }
+
     private func temporaryClaudeSettings(_ json: String) throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appending(path: "ClaudeSettingsTests-\(UUID().uuidString)", directoryHint: .isDirectory)

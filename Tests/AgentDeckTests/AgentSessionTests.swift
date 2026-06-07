@@ -331,6 +331,8 @@ final class AgentSessionTests: XCTestCase {
         ])
         XCTAssertFalse(calls[1].args.contains("--session-id"))
         XCTAssertEqual(session.backendSessionID, "claude-session-abc")
+        // 从 system/init 行捕获实际解析到的模型（别名/默认运行时才解析为具体版本）。
+        XCTAssertEqual(session.resolvedModel, "claude-opus-4-8")
     }
 
     func testClaudeWithoutBackendSessionReplaysLocalHistoryOnNextSend() async {
@@ -678,6 +680,55 @@ final class AgentSessionTests: XCTestCase {
         await session.send("go")
 
         XCTAssertTrue(session.messages.contains { $0.role == .error && $0.text == "模型不可用" })
+    }
+
+    func testAskUserQuestionStreamAppendsQuestionCardMessage() async {
+        let runner = ChunkedRunner(events: [
+            .stdout(#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"q1","name":"AskUserQuestion","input":{}}}}"# + "\n"),
+            .stdout(#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"questions\":[{\"header\":\"鉴权\",\"question\":\"用哪种？\",\"multiSelect\":false,\"options\":[{\"label\":\"OAuth\"},{\"label\":\"API Key\"}]}]}"}}}"# + "\n"),
+            .stdout(#"{"type":"stream_event","event":{"type":"content_block_stop","index":0}}"# + "\n"),
+            .exit(0)
+        ])
+        let session = AgentSession(
+            agent: streamingConfig(id: "ask-q", outputMode: .jsonLines),
+            workingDirectory: FileManager.default.temporaryDirectory,
+            permissionDecider: { _ in .allow },
+            runner: runner
+        )
+
+        await session.send("go")
+
+        let questionMessage = session.messages.first { $0.kind == .question }
+        XCTAssertNotNil(questionMessage, "AskUserQuestion 应渲染为一条 question 卡片消息")
+        XCTAssertEqual(questionMessage?.question?.questions.first?.options.map(\.label), ["OAuth", "API Key"])
+    }
+
+    func testSubagentDelegationAndResultPopulateMessageTasks() async {
+        let runner = ChunkedRunner(events: [
+            .stdout(#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_7","name":"Task","input":{}}}}"# + "\n"),
+            .stdout(#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"subagent_type\":\"Explore\",\"description\":\"调研\",\"prompt\":\"去查\"}"}}}"# + "\n"),
+            .stdout(#"{"type":"stream_event","event":{"type":"content_block_stop","index":0}}"# + "\n"),
+            .stdout(#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_7","content":"调研结果"}]}}"# + "\n"),
+            .exit(0)
+        ])
+        let session = AgentSession(
+            agent: streamingConfig(id: "sub", outputMode: .jsonLines),
+            workingDirectory: FileManager.default.temporaryDirectory,
+            permissionDecider: { _ in .allow },
+            runner: runner
+        )
+
+        await session.send("帮我委派")
+
+        let assistant = session.messages.first { $0.role == .assistant }
+        let task = assistant?.subagentTasks.first
+        XCTAssertEqual(task?.id, "toolu_7")
+        XCTAssertEqual(task?.agentType, "Explore")
+        XCTAssertEqual(task?.taskDescription, "调研")
+        XCTAssertEqual(task?.prompt, "去查")
+        XCTAssertEqual(task?.result, "调研结果") // tool_result 回填到任务
+        // 文本里嵌了子任务标记（展示层据此解出可点击的「委派任务」行）。
+        XCTAssertTrue(assistant?.text.contains("\u{1F}sub\u{1F}toolu_7") ?? false)
     }
 
     func testStopDuringStartupSnapshotCancelsBeforeLaunchingRunner() async {
@@ -1317,7 +1368,7 @@ private final class ClaudeSessionIDRunner: AgentRunning, @unchecked Sendable {
         record(command: command, args: args, environment: environment, workingDirectory: workingDirectory, stdin: stdin)
         let sessionID = self.sessionID
         return AsyncThrowingStream { continuation in
-            continuation.yield(.stdout(#"{"type":"system","subtype":"init","session_id":"\#(sessionID)"}"# + "\n"))
+            continuation.yield(.stdout(#"{"type":"system","subtype":"init","session_id":"\#(sessionID)","model":"claude-opus-4-8"}"# + "\n"))
             continuation.yield(.stdout(#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"},"index":0}}"# + "\n"))
             continuation.yield(.exit(0))
             continuation.finish()

@@ -255,7 +255,7 @@ struct ComposerView: View {
             .help("附加照片/文件 · 屏幕截图")
 
             ControlChip(text: modeLabel, hint: "Tab 切换模式", action: cycleMode)
-            ControlChip(text: modelLabel, hint: "/model 切换模型") {
+            ControlChip(text: modelLabel, hint: modelHint) {
                 prompt = "/model"
                 focusToken += 1
             }
@@ -411,8 +411,19 @@ struct ComposerView: View {
         }
     }
 
+    /// 芯片显示实际解析到的模型（如别名 opus → Opus 4.8）；没捕获到就显示所选模型。
     private var modelLabel: String {
-        modelDisplayName(session.model)
+        modelDisplayName(session.resolvedModel ?? session.model)
+    }
+
+    /// 选别名/默认而运行时解析为具体版本时，tooltip 点明「选择 → 实际」映射；否则只提示如何切换。
+    private var modelHint: String {
+        let base = "/model 切换模型"
+        guard let resolved = session.resolvedModel else { return base }
+        let selected = modelDisplayName(session.model)
+        let actual = modelDisplayName(resolved)
+        guard selected != actual else { return base }
+        return "选择 \(selected) → 实际 \(actual)｜\(base)"
     }
 
     private var promptFont: NSFont {
@@ -476,7 +487,11 @@ struct ComposerView: View {
         let showsFreeText = !trimmed.isEmpty
             && !suggestions.contains { $0.caseInsensitiveCompare(trimmed) == .orderedSame }
         let recent = recentModels(matching: trimmed, within: suggestions)
-        let groups = SlashCommandMenu.groupModels(suggestions)
+        // 去重：Recent 段已展示的别名不在下方分组里重复；分组内渲染同名的项（如别名解析版本与带日期全名都显示
+        // “Opus 4.8”）也只保留一项——修掉 /model 菜单「大堆模型、存在重复」。
+        let recentDisplayNames = Set(recent.map(modelDisplayName))
+        let dedupedSuggestions = SlashCommandMenu.dedupedByDisplayName(suggestions, excludingDisplayNames: recentDisplayNames)
+        let groups = SlashCommandMenu.groupModels(dedupedSuggestions)
 
         return ScrollView {
             VStack(alignment: .leading, spacing: 1) {
@@ -655,7 +670,7 @@ struct ComposerView: View {
 
     /// 把选中/输入的模型名落到会话，记入 Recent，并清空输入。
     private func applyModel(_ model: String) {
-        session.model = model
+        session.setSelectedModel(model)
         RecentModels.record(model, forAgent: session.agent.id)
         prompt = ""
     }

@@ -254,7 +254,7 @@ struct MarkdownText: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .fixedSize(horizontal: false, vertical: true)
                 case .code(let language, let code):
-                    MarkdownCodeBlockView(language: language, code: code)
+                    HighlightedCodeView(language: language, code: code)
                 }
             }
         }
@@ -280,11 +280,12 @@ enum FileLinkContextMenuPresentation {
     }
 }
 
-/// 围栏代码块卡片：窄于散文并居中（0.8 宽），深色头条显示语言名（两主题下都白色）+ 复制按钮，
-/// 正文等宽、横向可滚动（不强制折行）、保留缩进，并叠加语法高亮。
-private struct MarkdownCodeBlockView: View {
+/// 可复用的高亮代码卡片。聊天围栏代码默认使用 0.8 宽，文件预览传 nil 使用完整宽度。
+struct HighlightedCodeView: View {
     let language: String?
     let code: String
+    var showsHeader = true
+    var widthFraction: CGFloat? = MarkdownCodeBlockPresentation.widthFraction
 
     @AppStorage(BundledCodeFont.storageKey) private var codeFontID = BundledCodeFont.defaultID
     @AppStorage(AppFontSize.storageKey) private var appFontSize = AppFontSize.defaultValue
@@ -295,29 +296,40 @@ private struct MarkdownCodeBlockView: View {
     private var codeSize: CGFloat { AppFontSize.points(appFontSize) }
     private var codeFont: Font { BundledCodeFont.resolve(codeFontID).swiftUIFont(size: codeSize) }
 
+    @ViewBuilder
     var body: some View {
-        ProportionalWidthLayout(fraction: MarkdownCodeBlockPresentation.widthFraction) {
-            VStack(alignment: .leading, spacing: 0) {
-                header
-                ScrollView(.horizontal, showsIndicators: true) {
-                    Text(attributedCode)
-                        .font(codeFont)
-                        .textSelection(.enabled)
-                        .padding(.horizontal, 14)
-                        .padding(.top, 11)   // 头部与代码之间的间距（比旧版更明显）
-                        .padding(.bottom, 12)
-                }
-                // 横向滚动，纵向贴合内容（否则 ScrollView 会贪占竖直空间把卡片撑得过高）。
-                .fixedSize(horizontal: false, vertical: true)
+        if let widthFraction {
+            ProportionalWidthLayout(fraction: widthFraction) {
+                card
             }
-            .background(theme.background)
-            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous)
-                    .stroke(Color(nsColor: theme.nsBorder), lineWidth: 1)
-            )
-            .shadow(color: Theme.shadowColor, radius: 5, y: 2)
+        } else {
+            card
         }
+    }
+
+    private var card: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if showsHeader {
+                header
+            }
+            ScrollView(.horizontal, showsIndicators: true) {
+                Text(attributedCode)
+                    .font(codeFont)
+                    .textSelection(.enabled)
+                    .padding(.horizontal, 14)
+                    .padding(.top, showsHeader ? 11 : 12)
+                    .padding(.bottom, 12)
+            }
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(theme.background)
+        .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous)
+                .stroke(Color(nsColor: theme.nsBorder), lineWidth: 1)
+        )
+        .shadow(color: Theme.shadowColor, radius: 5, y: 2)
     }
 
     private var header: some View {

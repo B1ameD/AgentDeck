@@ -168,6 +168,27 @@ final class OpenCodeStreamingTests: XCTestCase {
         XCTAssertEqual(completed.lines.first.map { OpenCodeStreamWire.parseSSELine($0)?["type"] as? String }, "tool_use")
     }
 
+    func testQuestionAskedEmitsQuestionLineWithRequestIDAndKeepsRunning() {
+        var t = OpenCodeEventTranslator(sessionID: "s", thinking: true)
+        // opencode 的 question.asked：转成 question 事件交上层渲染卡片；不结束、不拒绝（run 保持运行等回答）。
+        let result = t.translate(questionAsked(requestID: "que_1"))
+        XCTAssertFalse(result.finished)
+        XCTAssertNil(result.rejectPermissionID)
+        let line = result.lines.first.flatMap { OpenCodeStreamWire.parseSSELine($0) }
+        XCTAssertEqual(line?["type"] as? String, "question")
+        XCTAssertEqual(line?["requestID"] as? String, "que_1")
+        let questions = (line?["input"] as? [String: Any])?["questions"] as? [[String: Any]]
+        XCTAssertEqual(questions?.first?["question"] as? String, "继续吗？")
+    }
+
+    func testQuestionAskedForeignSessionIgnored() {
+        var t = OpenCodeEventTranslator(sessionID: "s", thinking: true)
+        let foreign: [String: Any] = ["type": "question.asked", "properties": [
+            "id": "que_1", "sessionID": "OTHER", "questions": []
+        ]]
+        XCTAssertTrue(t.translate(foreign).lines.isEmpty)
+    }
+
     func testStreamsAnswerViaPartDelta() {
         var t = OpenCodeEventTranslator(sessionID: "s", thinking: true)
         _ = t.translate(messageUpdated(id: "m1", role: "assistant"))
@@ -261,6 +282,32 @@ final class OpenCodeStreamingTests: XCTestCase {
         XCTAssertEqual(request?.prompt, "hi")
         XCTAssertNil(request?.continueSessionID) // 首轮新建
         XCTAssertTrue(request?.thinking ?? false) // jsonLines → 展开思考
+    }
+
+    @MainActor
+    func testOpenCodeQuestionAskedRendersCardAndAnswerRepliesInSession() async throws {
+        let streamer = FakeOpenCodeStreamer(.yield([
+            #"{"type":"step_start","sessionID":"ses_abc","part":{}}"#,
+            #"{"type":"question","sessionID":"ses_abc","requestID":"que_1","input":{"questions":[{"question":"主题色?","header":"主题","options":[{"label":"蓝","description":""},{"label":"绿","description":""}],"multiple":false}]}}"#
+        ]))
+        let session = AgentSession(
+            agent: Self.openCodeConfig(),
+            workingDirectory: FileManager.default.temporaryDirectory,
+            runner: StubRunner(stdout: "X"),
+            openCodeStreamer: streamer
+        )
+
+        await session.send("配色")
+
+        // 渲染成可点选卡片消息，并带上 opencode 回传句柄 requestID。
+        let question = try XCTUnwrap(session.messages.first { $0.kind == .question }?.question)
+        XCTAssertEqual(question.requestID, "que_1")
+        XCTAssertEqual(question.questions.first?.options.map(\.label), ["蓝", "绿"])
+
+        // 作答 → 经 streamer.reply 把答案回传给运行中的 agent（requestID + 选中 label 数组）。
+        await session.answerQuestion(question, selections: [["蓝"]])
+        XCTAssertEqual(streamer.replies.first?.requestID, "que_1")
+        XCTAssertEqual(streamer.replies.first?.answers, [["蓝"]])
     }
 
     @MainActor
@@ -393,6 +440,17 @@ final class OpenCodeStreamingTests: XCTestCase {
         return ["type": "message.part.updated", "properties": ["part": part]]
     }
 
+    private func questionAsked(requestID: String) -> [String: Any] {
+        ["type": "question.asked", "properties": [
+            "id": requestID, "sessionID": "s",
+            "questions": [[
+                "question": "继续吗？", "header": "确认",
+                "options": [["label": "是", "description": ""], ["label": "否", "description": ""]],
+                "multiple": false
+            ]]
+        ]]
+    }
+
     private func sessionStatus(type: String) -> [String: Any] {
         ["type": "session.status", "properties": ["sessionID": "s", "status": ["type": type]]]
     }
@@ -431,11 +489,15 @@ private final class FakeOpenCodeStreamer: OpenCodeStreaming, @unchecked Sendable
     private let behavior: Behavior
     private let lock = NSLock()
     private var storedRequests: [OpenCodeStreamRequest] = []
+    private var storedReplies: [(requestID: String, answers: [[String]])] = []
+    private var storedRejects: [String] = []
 
     init(_ behavior: Behavior) { self.behavior = behavior }
 
     var requests: [OpenCodeStreamRequest] { lock.withLock { storedRequests } }
     var firstRequest: OpenCodeStreamRequest? { requests.first }
+    var replies: [(requestID: String, answers: [[String]])] { lock.withLock { storedReplies } }
+    var rejects: [String] { lock.withLock { storedRejects } }
 
     func stream(_ request: OpenCodeStreamRequest) async throws -> AsyncThrowingStream<ProcessStreamEvent, Error> {
         lock.withLock { storedRequests.append(request) }
@@ -449,6 +511,20 @@ private final class FakeOpenCodeStreamer: OpenCodeStreaming, @unchecked Sendable
                 continuation.finish()
             }
         }
+    }
+
+    func replyToQuestion(
+        executable: String, environment: [String: String], workingDirectory: URL,
+        requestID: String, answers: [[String]]
+    ) async {
+        lock.withLock { storedReplies.append((requestID, answers)) }
+    }
+
+    func rejectQuestion(
+        executable: String, environment: [String: String], workingDirectory: URL,
+        requestID: String
+    ) async {
+        lock.withLock { storedRejects.append(requestID) }
     }
 }
 

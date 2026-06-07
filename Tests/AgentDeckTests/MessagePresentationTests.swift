@@ -382,14 +382,28 @@ final class MessagePresentationTests: XCTestCase {
         XCTAssertEqual(RunDurationPresentation.timerInsertionIndex(in: blocks), 0)
     }
 
-    func testProcessDetailVisibilityHidesThinkingAndToolBlocksOnly() {
+    func testCollapseHidesThinkingButKeepsToolRowsVisible() {
+        // 折叠只藏思考：正文、错误、工具活动行都保留（工具行带 diff，不能被折叠藏掉）。
         XCTAssertTrue(RunProcessDetailPresentation.shouldRender(.text("正文"), detailsHidden: true))
         XCTAssertTrue(RunProcessDetailPresentation.shouldRender(.inlineError("错误"), detailsHidden: true))
         XCTAssertFalse(RunProcessDetailPresentation.shouldRender(.thinking("分析"), detailsHidden: true))
-        XCTAssertFalse(RunProcessDetailPresentation.shouldRender(.toolCall("读取 a.swift"), detailsHidden: true))
+        XCTAssertTrue(RunProcessDetailPresentation.shouldRender(.toolCall("读取 a.swift"), detailsHidden: true))
 
         XCTAssertTrue(RunProcessDetailPresentation.shouldRender(.thinking("分析"), detailsHidden: false))
         XCTAssertTrue(RunProcessDetailPresentation.shouldRender(.toolCall("读取 a.swift"), detailsHidden: false))
+    }
+
+    func testContainsCollapsibleThinkingDetectsThinkingBlocksOnly() {
+        let withThinking = [
+            MessagePresentation.CollapsedBlock(block: .toolCall("读取 a"), count: 1),
+            MessagePresentation.CollapsedBlock(block: .thinking("分析"), count: 1)
+        ]
+        let withoutThinking = [
+            MessagePresentation.CollapsedBlock(block: .toolCall("读取 a"), count: 1),
+            MessagePresentation.CollapsedBlock(block: .text("答案"), count: 1)
+        ]
+        XCTAssertTrue(RunProcessDetailPresentation.containsCollapsibleThinking(withThinking))
+        XCTAssertFalse(RunProcessDetailPresentation.containsCollapsibleThinking(withoutThinking))
     }
 
     func testProcessDetailToggleAvoidsMovingLayoutTransitions() {

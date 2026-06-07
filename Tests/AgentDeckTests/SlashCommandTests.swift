@@ -167,7 +167,7 @@ final class SlashCommandTests: XCTestCase {
 
     func testModelDisplayNameStripsProviderDashesAndCapitalizes() {
         XCTAssertEqual(SlashCommandMenu.modelDisplayName("opencode-go/deepseek-v4-flash"), "Deepseek V4 Flash")
-        XCTAssertEqual(SlashCommandMenu.modelDisplayName("anthropic/claude-sonnet-4-6"), "Claude Sonnet 4 6")
+        XCTAssertEqual(SlashCommandMenu.modelDisplayName("anthropic/claude-sonnet-4-6"), "Sonnet 4.6")
         XCTAssertEqual(SlashCommandMenu.modelDisplayName("sonnet"), "Sonnet")
         XCTAssertEqual(SlashCommandMenu.modelDisplayName("default"), "默认模型")
     }
@@ -176,6 +176,31 @@ final class SlashCommandTests: XCTestCase {
         XCTAssertEqual(SlashCommandMenu.modelDisplayName("openai/gpt-4o"), "GPT 4o")
         XCTAssertEqual(SlashCommandMenu.modelDisplayName("qwen/qwen2-vl"), "Qwen2 VL")
         XCTAssertEqual(SlashCommandMenu.modelDisplayName("gpt-oss"), "GPT OSS")
+    }
+
+    func testModelDisplayNameRendersVersionStripsVendorAndDate() {
+        // 连续数字段连成版本号、去掉厂商名与结尾日期段，让别名解析到的具体版本一目了然。
+        XCTAssertEqual(SlashCommandMenu.modelDisplayName("claude-opus-4-8"), "Opus 4.8")
+        XCTAssertEqual(SlashCommandMenu.modelDisplayName("opus"), "Opus")
+        XCTAssertEqual(SlashCommandMenu.modelDisplayName("claude-haiku-4-5"), "Haiku 4.5")
+        XCTAssertEqual(SlashCommandMenu.modelDisplayName("claude-opus-4-8-20260514"), "Opus 4.8")
+        XCTAssertEqual(SlashCommandMenu.modelDisplayName("claude-3-5-sonnet-20241022"), "3.5 Sonnet")
+    }
+
+    func testDedupedByDisplayNameDropsSameLabelAndExcludedItems() {
+        // 渲染同名（别名解析版本与带日期全名都显示 “Opus 4.8”）只保留首个。
+        XCTAssertEqual(
+            SlashCommandMenu.dedupedByDisplayName(["claude-opus-4-8", "claude-opus-4-8-20260514", "sonnet"]),
+            ["claude-opus-4-8", "sonnet"]
+        )
+        // 排除 Recent 段已展示的显示名：下方分组不再重复出现同名项。
+        XCTAssertEqual(
+            SlashCommandMenu.dedupedByDisplayName(
+                ["default", "opus", "sonnet"],
+                excludingDisplayNames: ["Opus"]
+            ),
+            ["default", "sonnet"]
+        )
     }
 
     private func agent(id: String, supportsStop: Bool = true) -> AgentConfig {

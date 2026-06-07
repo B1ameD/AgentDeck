@@ -161,6 +161,10 @@ public final class AgentSession: Identifiable {
     public private(set) var backendSessionID: String?
     /// 捕获 backendSessionID 时使用的模型 key，模型切换时清空会话 id。
     public private(set) var backendSessionModel: String?
+    /// Claude 输出流里实际解析到的模型 id（system/init 的顶层 `model` 或 assistant 的 `message.model`）。
+    /// 选 “opus”/“default” 等别名时运行时才解析为具体版本——据此把 UI 芯片显示成真实版本（如 Opus 4.8）。
+    /// 改选模型时清空（见 setSelectedModel），下一轮重新捕获。
+    public private(set) var resolvedModel: String?
     private var backendSessionJSONBuffer = ""
 
     private var isApprovedForCurrentDirectory: Bool {
@@ -525,6 +529,8 @@ public final class AgentSession: Identifiable {
 
         if let assistantIndex = messages.indices.reversed().first(where: { messages[$0].role == .assistant }) {
             messages[assistantIndex].fileLinks = paths
+            // 把本轮逐行 diff 也挂到 assistant 消息上：聊天里每个「编辑 X」工具行据此就地展开该文件的 diff。
+            messages[assistantIndex].turnDiffSummary = reviewSummary
         }
         let text = (["改动文件："] + paths.map { "- \($0)" }).joined(separator: "\n")
         messages.append(ChatMessage(
@@ -693,7 +699,96 @@ public final class AgentSession: Identifiable {
             messages.append(ChatMessage(role: .system, text: event.text))
         case .error:
             messages.append(ChatMessage(role: .error, text: event.text))
+        case .question:
+            appendQuestion(event.text, assistantIndex: &assistantIndex, producedMessage: &producedMessage)
+        case .subagent:
+            applySubagentEvent(event.text, assistantIndex: &assistantIndex, producedMessage: &producedMessage)
         }
+    }
+
+    /// 委派任务事件：派发态 → 在当前 assistant 气泡插入「委派任务」行并记录任务；结果态 → 回填到含该 id 的消息。
+    private func applySubagentEvent(_ json: String, assistantIndex: inout Int?, producedMessage: inout Bool) {
+        guard let data = json.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let id = object["id"] as? String else { return }
+
+        if object["done"] as? Bool == true {
+            let result = object["result"] as? String
+            let isError = (object["isError"] as? Bool) == true
+            for index in messages.indices {
+                if let taskIndex = messages[index].subagentTasks.firstIndex(where: { $0.id == id }) {
+                    messages[index].subagentTasks[taskIndex].result = result
+                    messages[index].subagentTasks[taskIndex].isError = isError
+                    break
+                }
+            }
+            return
+        }
+
+        producedMessage = true
+        let task = SubagentTask(
+            id: id,
+            agentType: (object["agentType"] as? String) ?? "",
+            taskDescription: (object["description"] as? String) ?? "",
+            prompt: (object["prompt"] as? String) ?? ""
+        )
+        appendAssistantToolCall(SubagentMarker.encode(id: id, label: task.rowLabel), assistantIndex: &assistantIndex)
+        if let index = assistantIndex {
+            messages[index].subagentTasks.append(task)
+        }
+    }
+
+    /// AskUserQuestion：把解析出的问题作为独立卡片消息追加，并结束当前 assistant 气泡（问题之后的输出另起一条）。
+    /// 有结构化选项 → 渲染可点选卡片；无选项（部分 opencode 提问）→ 退化为一条提示，请用户直接在下方回复。
+    private func appendQuestion(_ inputJSON: String, assistantIndex: inout Int?, producedMessage: inout Bool) {
+        producedMessage = true
+        assistantIndex = nil
+        if let question = AskUserQuestionParser.parse(inputJSON: inputJSON) {
+            messages.append(ChatMessage(
+                role: .system,
+                text: question.plainSummary,
+                kind: .question,
+                question: question
+            ))
+            return
+        }
+        let detail = AskUserQuestionParser.fallbackPrompt(inputJSON: inputJSON)
+        let lead = detail.map { "Agent 想了解：\($0)" } ?? "Agent 提出了一个交互式问题。"
+        messages.append(ChatMessage(
+            role: .system,
+            text: "\(lead)\n（无法解析为可点选卡片；请直接在下方回复，或点停止。）"
+        ))
+    }
+
+    /// 回答提问卡片。opencode（有 requestID）→ 经 reply API 回传给运行中的 agent，原地继续；
+    /// Claude（无 requestID）→ 把选择拼成下一条消息发出（续接会话）。
+    public func answerQuestion(_ question: AskUserQuestion, selections: [[String]]) async {
+        if let requestID = question.requestID, agent.kind == .openCode, let streamer = openCodeStreamer {
+            await streamer.replyToQuestion(
+                executable: agent.command, environment: agent.runtimeEnvironment(),
+                workingDirectory: workingDirectory, requestID: requestID, answers: selections
+            )
+            return
+        }
+        await send(Self.composedAnswerText(question, selections: selections))
+    }
+
+    /// 跳过提问。opencode → reject API（解除阻塞、agent 继续）；Claude → 不发送（用户可自行输入）。
+    public func rejectQuestion(_ question: AskUserQuestion) async {
+        guard let requestID = question.requestID, agent.kind == .openCode, let streamer = openCodeStreamer else { return }
+        await streamer.rejectQuestion(
+            executable: agent.command, environment: agent.runtimeEnvironment(),
+            workingDirectory: workingDirectory, requestID: requestID
+        )
+    }
+
+    /// 把各题选择拼成发给 Claude 的回答文本（保留题序）。
+    static func composedAnswerText(_ question: AskUserQuestion, selections: [[String]]) -> String {
+        let lines = zip(question.questions, selections).map { item, labels in
+            "「\(item.title)」：\(labels.joined(separator: "、"))"
+        }
+        if lines.count == 1 { return lines.first ?? "" }
+        return (["我的选择："] + lines.map { "- \($0)" }).joined(separator: "\n")
     }
 
     private func appendAssistantText(_ text: String, assistantIndex: inout Int?) {
@@ -875,6 +970,13 @@ public final class AgentSession: Identifiable {
         }
     }
 
+    /// 用户在 /model 选择器改选模型：更新选择并清掉上一次解析到的具体版本，
+    /// 避免芯片仍显示上一个模型的版本——下一轮运行会重新捕获。
+    public func setSelectedModel(_ newModel: String) {
+        model = newModel
+        resolvedModel = nil
+    }
+
     private var currentBackendModelKey: String {
         let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "default" : trimmed
@@ -899,9 +1001,15 @@ public final class AgentSession: Identifiable {
     }
 
     private func captureBackendSessionID(fromJSONLine line: String) {
-        guard backendSessionID == nil,
+        // 已拿到会话 id、且本轮模型也已解析时，无需再逐行解析 JSON（模型在 init 行即出现、单轮内不变）。
+        let needsSession = backendSessionID == nil
+        let needsModel = agent.kind == .claudeCode && resolvedModel == nil
+        guard needsSession || needsModel,
               let data = line.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+
+        if needsModel { captureResolvedModel(from: object) }
+        guard needsSession else { return }
 
         switch agent.kind {
         case .claudeCode:
@@ -925,5 +1033,13 @@ public final class AgentSession: Identifiable {
         case .pi, .custom:
             break
         }
+    }
+
+    /// 从 Claude 输出流捕获实际解析到的模型：优先 system/init 的顶层 `model`，回退 assistant 的 `message.model`。
+    private func captureResolvedModel(from object: [String: Any]) {
+        let candidate = (object["model"] as? String)
+            ?? ((object["message"] as? [String: Any])?["model"] as? String)
+        guard let candidate, !candidate.isEmpty, candidate != resolvedModel else { return }
+        resolvedModel = candidate
     }
 }

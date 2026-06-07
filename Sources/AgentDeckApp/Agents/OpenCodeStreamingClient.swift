@@ -9,6 +9,28 @@ import os
 /// 从而可以原样复用既有 `OutputParser`（增量追加到同一个气泡）。
 public protocol OpenCodeStreaming: Sendable {
     func stream(_ request: OpenCodeStreamRequest) async throws -> AsyncThrowingStream<ProcessStreamEvent, Error>
+    /// 回答 opencode 提问（POST /question/{requestID}/reply）。answers 按问题顺序，每项是该问题选中的 label 数组。
+    func replyToQuestion(
+        executable: String, environment: [String: String], workingDirectory: URL,
+        requestID: String, answers: [[String]]
+    ) async
+    /// 拒绝/跳过 opencode 提问（POST /question/{requestID}/reject）。
+    func rejectQuestion(
+        executable: String, environment: [String: String], workingDirectory: URL,
+        requestID: String
+    ) async
+}
+
+public extension OpenCodeStreaming {
+    // 默认空实现：非 opencode 的测试替身无需关心提问回传。
+    func replyToQuestion(
+        executable: String, environment: [String: String], workingDirectory: URL,
+        requestID: String, answers: [[String]]
+    ) async {}
+    func rejectQuestion(
+        executable: String, environment: [String: String], workingDirectory: URL,
+        requestID: String
+    ) async {}
 }
 
 /// 一次 opencode 流式调用所需的结构化参数（取代 CLI 参数编码）。
@@ -249,6 +271,38 @@ public final class OpenCodeStreamingClient: OpenCodeStreaming, @unchecked Sendab
         _ = try? await session.data(for: request)
     }
 
+    // MARK: - 提问回传（question.asked → reply / reject）
+
+    public func replyToQuestion(
+        executable: String, environment: [String: String], workingDirectory: URL,
+        requestID: String, answers: [[String]]
+    ) async {
+        await postQuestion(
+            executable: executable, environment: environment, directory: workingDirectory,
+            path: "question/\(requestID)/reply", body: ["answers": answers]
+        )
+    }
+
+    public func rejectQuestion(
+        executable: String, environment: [String: String], workingDirectory: URL,
+        requestID: String
+    ) async {
+        await postQuestion(
+            executable: executable, environment: environment, directory: workingDirectory,
+            path: "question/\(requestID)/reject", body: nil
+        )
+    }
+
+    /// 解析 base（拉起/复用 headless server）后向 question 端点 POST。失败静默（用户可重试 / Stop）。
+    private func postQuestion(
+        executable: String, environment: [String: String], directory: URL,
+        path: String, body: [String: Any]?
+    ) async {
+        guard let base = try? await server.baseURL(executable: executable, environment: environment) else { return }
+        let request = makeRequest(base.appendingPathComponent(path), method: "POST", directory: directory, body: body, timeout: 15)
+        _ = try? await session.data(for: request)
+    }
+
     private func makeRequest(
         _ url: URL,
         method: String,
@@ -457,6 +511,19 @@ struct OpenCodeEventTranslator {
             var translation = OpenCodeEventTranslation()
             translation.rejectPermissionID = properties["id"] as? String
             return translation
+
+        case "question.asked":
+            // opencode 的提问工具（Question.ask）发布本事件并**阻塞**等回答。转成 question 事件交上层渲染可点选卡片；
+            // 不拒绝、不结束、不中止——run 保持运行等用户作答，answers 经 POST /question/{requestID}/reply 回传，agent 原地继续。
+            guard properties["sessionID"] as? String == sessionID,
+                  let requestID = properties["id"] as? String else { return OpenCodeEventTranslation() }
+            let line = OpenCodeStreamWire.line([
+                "type": "question",
+                "sessionID": sessionID,
+                "requestID": requestID,
+                "input": ["questions": properties["questions"] ?? []]
+            ])
+            return OpenCodeEventTranslation(lines: [line])
 
         default:
             return OpenCodeEventTranslation()

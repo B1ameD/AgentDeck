@@ -119,9 +119,16 @@ struct InlineDiffCardView: View {
     }
 }
 
-private struct InlineDiffFileCardView: View {
+/// 单个文件的可展开 diff 卡片（路径头 + 状态 + 行号 + 绿增红删）。
+/// 既用于内联 diff 预览，也用于聊天里「编辑 X」工具行就地展开该文件 diff。
+struct InlineDiffFileCardView: View {
     let file: TurnFileDiff
-    @State private var expanded = false
+    @State private var expanded: Bool
+
+    init(file: TurnFileDiff, initiallyExpanded: Bool = false) {
+        self.file = file
+        _expanded = State(initialValue: initiallyExpanded)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {

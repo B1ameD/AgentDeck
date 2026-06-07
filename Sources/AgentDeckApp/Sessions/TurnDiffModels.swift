@@ -74,4 +74,15 @@ public struct TurnDiffSummary: Equatable, Sendable, Codable {
     public var totalRemoved: Int { files.reduce(0) { $0 + $1.removedCount } }
     public var isEmpty: Bool { files.isEmpty }
     public var paths: [String] { files.map(\.path) }
+
+    /// 找出与某个工具编辑路径对应的文件 diff：先按相对路径精确匹配，再按文件名兜底。
+    /// 供聊天里「编辑 X」工具行就地展开该文件本轮的逐行 diff。
+    public func fileDiff(forRelativePath relativePath: String) -> TurnFileDiff? {
+        let target = relativePath.trimmingCharacters(in: .whitespaces)
+        guard !target.isEmpty else { return nil }
+        if let exact = files.first(where: { $0.path == target }) { return exact }
+        let base = (target as NSString).lastPathComponent
+        guard !base.isEmpty else { return nil }
+        return files.first(where: { ($0.path as NSString).lastPathComponent == base })
+    }
 }

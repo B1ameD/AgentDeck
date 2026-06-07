@@ -360,7 +360,7 @@ struct SettingsWindowView: View {
             if let session = workspace.focusedSession {
                 Text("作用于当前标签：\(session.agent.name)").font(captionFont).foregroundStyle(.secondary)
                 labeledField("模型") {
-                    TextField("", text: Binding(get: { session.model }, set: { session.model = $0 }))
+                    TextField("", text: Binding(get: { session.model }, set: { session.setSelectedModel($0) }))
                         .textFieldStyle(.roundedBorder)
                 }
                 settingRow("运行超时", "单次运行的最长时间。") {

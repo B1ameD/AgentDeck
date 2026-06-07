@@ -187,6 +187,21 @@ final class OutputParserTests: XCTestCase {
         XCTAssertEqual(events, [OutputEvent(kind: .tool, text: "读取 /tmp/a.swift")])
     }
 
+    func testAskUserQuestionToolUseEmitsQuestionEventWithInputJSON() {
+        let parser = OutputParser(mode: .jsonLines)
+        let events = parser.parse(
+            #"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"q1","name":"AskUserQuestion","input":{}}}}"# + "\n" +
+            #"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"questions\":[{\"header\":\"Auth\",\"question\":\"Which?\",\"multiSelect\":false,\"options\":[{\"label\":\"OAuth\"},{\"label\":\"API key\"}]}]}"}}}"# + "\n" +
+            #"{"type":"stream_event","event":{"type":"content_block_stop","index":0}}"# + "\n"
+        )
+
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(events.first?.kind, .question)
+        // text 是该工具的 input JSON，可被会话层解析成结构化问题。
+        let parsed = AskUserQuestionParser.parse(inputJSON: events.first?.text ?? "")
+        XCTAssertEqual(parsed?.questions.first?.options.map(\.label), ["OAuth", "API key"])
+    }
+
     func testOpenCodeReasoningPartFoldsAsThinking() {
         let parser = OutputParser(mode: .jsonLines)
         let events = parser.parse(#"{"type":"message.part.updated","part":{"type":"reasoning","text":"weighing options"}}"# + "\n")

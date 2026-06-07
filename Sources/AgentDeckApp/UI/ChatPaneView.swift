@@ -1,17 +1,35 @@
 import SwiftUI
 import AppKit
 
+/// 底部锚点是否落在视口内（≈用户贴底）。侧栏开合时据此决定是否保持贴底。
+private struct ChatBottomVisibleKey: PreferenceKey {
+    static let defaultValue = true
+    static func reduce(value: inout Bool, nextValue: () -> Bool) { value = nextValue() }
+}
+
 struct ChatPaneView: View {
     @Bindable var session: AgentSession
     var workspace: WorkspaceController? = nil
+    /// 右侧栏是否可见。开合会改变聊天列宽、触发重排——据此把滚动重新锚回底部（最新消息），见 issue 6。
+    var sidebarVisible: Bool = false
     let onClose: () -> Void
     var onOpenFile: (URL) -> Void = { _ in }
     var onOpenWebURL: (URL) -> Void = { _ in }
     var onReviewChanges: (TurnDiffSummary) -> Void = { _ in } // 「审核改动」：打开右侧栏「审核」标签
+    var onShowSubagent: (SubagentTask) -> Void = { _ in } // 「委派任务」：在右侧栏展开子任务明细
     var onClaudeLogin: () -> Void = {}
     @State private var composerMenuOpen = false // 菜单打开时聊天区显示透明遮罩，点击即关闭
+    /// 用户当前是否处于（接近）聊天底部。只有「本就在底部」时，侧栏开合才把视图保持贴底；
+    /// 若在上翻看历史，则不打扰其位置。避免之前「一开侧栏就强行滚到底」的突兀观感。
+    @State private var atBottom = true
+
+    /// 聊天列表底部锚点 id（滚动到最新消息用）。
+    private static let bottomAnchorID = "agentdeck.chat.bottomAnchor"
+    private static let scrollSpace = "agentdeck.chat.scrollSpace"
 
     var body: some View {
+        ScrollViewReader { proxy in
+        GeometryReader { outer in
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 10) {
                 ForEach(session.messages) { message in
@@ -23,7 +41,10 @@ struct ChatPaneView: View {
                         isStreaming: message.id == streamingAssistantID,
                         onOpenFile: onOpenFile,
                         onOpenWebURL: onOpenWebURL,
-                        onReviewChanges: onReviewChanges
+                        onReviewChanges: onReviewChanges,
+                        onAnswerQuestion: { q, selections in Task { await session.answerQuestion(q, selections: selections) } },
+                        onRejectQuestion: { q in Task { await session.rejectQuestion(q) } },
+                        onShowSubagent: onShowSubagent
                     )
                         .transition(.asymmetric(
                             insertion: .opacity.combined(with: .offset(y: 8)),
@@ -37,15 +58,28 @@ struct ChatPaneView: View {
                             removal: .opacity
                         ))
                 }
+                // 底部锚点：既给 scrollTo 用，也用它在视口里的位置判断「是否贴底」。
+                Color.clear.frame(height: 1)
+                    .id(Self.bottomAnchorID)
+                    .background(GeometryReader { anchor in
+                        Color.clear.preference(
+                            key: ChatBottomVisibleKey.self,
+                            value: anchor.frame(in: .named(Self.scrollSpace)).minY <= outer.size.height + 140
+                        )
+                    })
             }
             .padding(18)
             .animation(.spring(response: 0.34, dampingFraction: 0.86), value: session.messages.count)
             .animation(.spring(response: 0.34, dampingFraction: 0.86), value: shouldShowThinkingIndicator)
         }
+        .coordinateSpace(name: Self.scrollSpace)
         // 默认锚定到底部：打开会话即显示最新对话；在底部时新内容自动跟随，已手动上翻则保留当前位置。
         .defaultScrollAnchor(.bottom)
         // 进入/切换不同会话时重建滚动视图，确保每次点进都从最新（底部）开始，而非上次的位置。
         .id(session.id)
+        .onPreferenceChange(ChatBottomVisibleKey.self) { atBottom = $0 }
+        // 侧栏开/合会改列宽并重排聊天：仅当本就贴底时，逐帧把视图保持贴底（无动画，故不会上下乱滚）。
+        .onChange(of: sidebarVisible) { _, _ in keepPinnedToBottomIfNeeded(proxy) }
         // 菜单打开时，聊天区覆盖一层透明遮罩：点击列表外即关闭菜单。
         .overlay {
             if composerMenuOpen {
@@ -84,6 +118,26 @@ struct ChatPaneView: View {
             Text("命令：\(pending.request.command)\n目录：\(pending.request.workingDirectory)\n风险：\(riskLabel(pending.request.risk))")
         }
         // 广播为用户显式批量动作，默认放行（见 WorkspaceController.broadcast），不再弹聚合授权框。
+        }
+        }
+    }
+
+    /// 仅当用户本就贴底时，在侧栏宽度动画(≈0.28s)期间逐帧把视图保持在底部。
+    /// 关键：用**无动画**的 scrollTo——内容随列宽重排时底部始终被钉住，看起来是「内容贴着底不动」，
+    /// 而非之前那种带动画的来回滚动。若用户在上翻看历史（非贴底），则完全不打扰。
+    private func keepPinnedToBottomIfNeeded(_ proxy: ScrollViewProxy) {
+        guard atBottom else { return }
+        // 中间栏现在是「瞬变」重排（一次性、无动画），故只需在重排稳定后**无动画**地锚一次（再补一帧兜底），
+        // 不再用逐帧 scrollTo 追逐动画中的底部——那正是之前跳动/抖动的来源。
+        Task { @MainActor in
+            for _ in 0..<2 {
+                await Task.yield()
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom) }
+                try? await Task.sleep(for: .milliseconds(30))
+            }
+        }
     }
 
     /// 正在流式输出的那条 assistant 气泡 id（运行中且为最后一条 assistant 消息）；非运行态为 nil。
@@ -146,6 +200,9 @@ private struct MessageBubble: View {
     let onOpenFile: (URL) -> Void
     let onOpenWebURL: (URL) -> Void
     var onReviewChanges: (TurnDiffSummary) -> Void = { _ in }
+    var onAnswerQuestion: (AskUserQuestion, [[String]]) -> Void = { _, _ in }
+    var onRejectQuestion: (AskUserQuestion) -> Void = { _ in }
+    var onShowSubagent: (SubagentTask) -> Void = { _ in }
     @State private var copied = false
     @State private var hovering = false
     @State private var hoverOffTask: Task<Void, Never>?
@@ -218,7 +275,11 @@ private struct MessageBubble: View {
                 isStreaming: isStreaming,
                 runStartedAt: message.runStartedAt,
                 runEndedAt: message.runEndedAt,
-                linkContext: linkContext
+                turnDiffSummary: message.turnDiffSummary,
+                subagentTasks: message.subagentTasks,
+                linkContext: linkContext,
+                onReviewChanges: onReviewChanges,
+                onShowSubagent: onShowSubagent
             )
         } else if message.role == .error {
             HStack(alignment: .top, spacing: 6) {
@@ -233,6 +294,8 @@ private struct MessageBubble: View {
         } else if message.role == .system {
             if message.kind == .changeReview {
                 changeReviewSummary
+            } else if message.kind == .question, let question = message.question {
+                AskUserQuestionCard(question: question, onAnswer: onAnswerQuestion, onReject: onRejectQuestion)
             } else {
                 MarkdownText(content: message.text, linkContext: linkContext)
             }
@@ -308,28 +371,30 @@ private struct MessageBubble: View {
     }
 
     private var background: Color {
+        if message.kind == .question { return Color.clear } // 卡片自带描边/底色，外层气泡保持透明
         switch message.role {
         case .user:
-            Theme.accent.opacity(0.14)
+            return Theme.accent.opacity(0.14)
         case .assistant:
-            Color.clear
+            return Color.clear
         case .system:
-            Color.indigo.opacity(0.08)
+            return Color.indigo.opacity(0.08)
         case .error:
-            Color.red.opacity(0.10)
+            return Color.red.opacity(0.10)
         }
     }
 
     private var borderColor: Color {
+        if message.kind == .question { return Color.clear }
         switch message.role {
         case .user:
-            Theme.accent.opacity(0.24)
+            return Theme.accent.opacity(0.24)
         case .error:
-            Color.red.opacity(0.24)
+            return Color.red.opacity(0.24)
         case .assistant:
-            Color.clear
+            return Color.clear
         default:
-            Theme.hairline
+            return Theme.hairline
         }
     }
 
@@ -344,29 +409,32 @@ private struct AssistantMessageContent: View {
     let isStreaming: Bool
     let runStartedAt: Date?
     let runEndedAt: Date?
+    var turnDiffSummary: TurnDiffSummary? = nil
+    var subagentTasks: [SubagentTask] = []
     let linkContext: MessageLinkContext
+    var onReviewChanges: (TurnDiffSummary) -> Void = { _ in }
+    var onShowSubagent: (SubagentTask) -> Void = { _ in }
     @State private var processDetailsHidden = false
 
     var body: some View {
         let renderBlocks = MessagePresentation.assistantTimelineBlocks(in: text)
-        let hasProcessDetails = RunProcessDetailPresentation.containsProcessDetails(
-            toolCalls: toolCalls,
-            blocks: renderBlocks
-        )
+        // 折叠只针对思考过程：运行时间行的折叠箭头、结束后自动折叠都仅在「有思考块」时生效。
+        let hasThinking = RunProcessDetailPresentation.containsCollapsibleThinking(renderBlocks)
 
         VStack(alignment: .leading, spacing: 7) {
             if let runStartedAt {
                 RunTimerHeader(
                     startedAt: runStartedAt,
                     endedAt: runEndedAt,
-                    hasProcessDetails: hasProcessDetails,
+                    hasProcessDetails: hasThinking,
                     processDetailsHidden: processDetailsHidden
                 ) {
-                    processDetailsHidden.toggle()
+                    withAnimation(.easeOut(duration: 0.18)) { processDetailsHidden.toggle() }
                 }
             }
 
-            if !toolCalls.isEmpty && !processDetailsHidden {
+            // 工具活动行（读取/编辑/运行…）始终展示，不随思考折叠而消失。
+            if !toolCalls.isEmpty {
                 CollapsibleToolCallsBlock(toolCalls: toolCalls)
             }
 
@@ -378,12 +446,29 @@ private struct AssistantMessageContent: View {
                     case .thinking(let text):
                         ThinkingProcessBlock(text: text)
                     case .toolCall(let text):
-                        InlineToolActivityRow(text: text, count: collapsed.count, linkContext: linkContext)
+                        InlineToolActivityRow(
+                            text: text,
+                            count: collapsed.count,
+                            linkContext: linkContext,
+                            turnDiffSummary: turnDiffSummary,
+                            onReviewChanges: onReviewChanges
+                        )
                     case .inlineError(let text):
                         InlineErrorLine(text: text)
+                    case .subagentRef(let id, let label):
+                        SubagentActivityRow(
+                            task: subagentTasks.first { $0.id == id },
+                            label: label
+                        ) { task in onShowSubagent(task) }
                     }
                 }
             }
+        }
+        // 运行结束即自动折叠**思考过程**（等效点击「运行总时间」行）；工具/编辑行保留可见。仅在有思考时折叠。
+        .onAppear { if runEndedAt != nil && hasThinking { processDetailsHidden = true } }
+        .onChange(of: runEndedAt) { _, newValue in
+            guard newValue != nil, hasThinking else { return }
+            withAnimation(.easeOut(duration: 0.2)) { processDetailsHidden = true }
         }
     }
 }
@@ -424,7 +509,7 @@ private struct RunTimerHeader: View {
                 timerLabel(now: now)
             }
             .buttonStyle(.plain)
-            .help(processDetailsHidden ? "显示全部思考/工具内容" : "隐藏全部思考/工具内容")
+            .help(processDetailsHidden ? "展开思考过程" : "折叠思考过程")
         } else {
             timerLabel(now: now)
         }
@@ -575,70 +660,158 @@ enum ToolActivityRowPresentation {
 /// 内联工具活动行：把「读取 / 编辑 / 创建 / 运行 …」状态按时间顺序穿插在 assistant 输出里
 /// （参考 Codex / Claude Code 的运行状态提示）。图标按动词推断，工具出错时转红；
 /// 相邻重复（如连续编辑同一文件）合并成一行并显示 ×次数；文件类动词的路径渲染为可点击链接，点开在右侧栏显示。
+/// 行尾「›」可点开展开：显示完整摘要（全路径/命令），编辑类还就地展开该文件本轮逐行 diff。
 private struct InlineToolActivityRow: View {
     let text: String
     var count: Int = 1
     let linkContext: MessageLinkContext
+    var turnDiffSummary: TurnDiffSummary? = nil
+    var onReviewChanges: (TurnDiffSummary) -> Void = { _ in }
+
+    @State private var expanded = false
+    @State private var hovering = false
 
     /// 拦截路径链接点击用的私有 scheme（绝对路径放在 url.path 里）。
     private static let fileScheme = "agentdeck-toolfile"
+    /// 工具行里文件链接的中性灰：比同行普通次级文字更深，仍提示可点击，但不抢蓝色强调。
+    private static let linkColor = Color.primary.opacity(0.72)
 
     var body: some View {
         let error = ToolActivityStyle.isError(text)
         let tint = error ? Color.red.opacity(0.85) : Theme.accent.opacity(0.85)
         let parts = ToolActivity.displayParts(in: text, workingDirectory: linkContext.workingDirectory)
         let firstTarget = firstFileTarget(in: parts)
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Image(systemName: ToolActivityStyle.icon(for: text))
-                .appFont(relative: -2, weight: .semibold)
-                .foregroundStyle(tint)
-                .frame(width: 15)
-            Group {
-                if let firstTarget {
-                    // 路径片段渲染成链接：点击交给下方 openURL → 在右侧栏打开。链接行不开文本选择，避免和点击冲突。
-                    Text(linkedString(parts: parts, error: error)).tint(Theme.accent)
-                        .contextMenu {
-                            Button(FileLinkContextMenuPresentation.copyAbsoluteFolderTitle) {
-                                copy(FileLinkContextMenuPresentation.absoluteFolderPath(for: firstTarget.url))
-                            }
-                            Button(FileLinkContextMenuPresentation.copyRelativeFolderTitle) {
-                                copy(FileLinkContextMenuPresentation.relativeFolderPath(
-                                    for: firstTarget.url,
-                                    workingDirectory: linkContext.workingDirectory
-                                ))
-                            }
-                            Button(FileLinkContextMenuPresentation.openInFinderTitle) {
-                                NSWorkspace.shared.activateFileViewerSelecting([firstTarget.url])
-                            }
-                        }
-                } else {
-                    Text(plainString(error: error)).textSelection(.enabled)
-                }
-            }
-            .appFont(relative: -1)
-            .lineLimit(2)
-            .truncationMode(.middle)
-            Spacer(minLength: 6)
-            if count > 1 {
-                Text("×\(count)")
+        let display = ToolActivity.displayText(in: text, workingDirectory: linkContext.workingDirectory)
+        let matchedDiff = matchedFileDiff(for: firstTarget)
+        let canExpand = matchedDiff != nil || text != display
+
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: ToolActivityStyle.icon(for: text))
                     .appFont(relative: -2, weight: .semibold)
-                    .monospacedDigit()
                     .foregroundStyle(tint)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(tint.opacity(0.16), in: Capsule())
+                    .frame(width: 15)
+                Group {
+                    if let firstTarget {
+                        // 路径片段渲染成链接：点击交给下方 openURL → 在右侧栏打开。
+                        Text(linkedString(parts: parts, error: error)).tint(Self.linkColor)
+                            .contextMenu {
+                                Button(FileLinkContextMenuPresentation.copyAbsoluteFolderTitle) {
+                                    copy(FileLinkContextMenuPresentation.absoluteFolderPath(for: firstTarget.url))
+                                }
+                                Button(FileLinkContextMenuPresentation.copyRelativeFolderTitle) {
+                                    copy(FileLinkContextMenuPresentation.relativeFolderPath(
+                                        for: firstTarget.url,
+                                        workingDirectory: linkContext.workingDirectory
+                                    ))
+                                }
+                                Button(FileLinkContextMenuPresentation.openInFinderTitle) {
+                                    NSWorkspace.shared.activateFileViewerSelecting([firstTarget.url])
+                                }
+                            }
+                    } else {
+                        Text(plainString(error: error)).textSelection(.enabled)
+                    }
+                }
+                .appFont(relative: -1)
+                .lineLimit(expanded ? nil : 2)
+                .truncationMode(.middle)
+                Spacer(minLength: 6)
+                if count > 1 {
+                    Text("×\(count)")
+                        .appFont(relative: -2, weight: .semibold)
+                        .monospacedDigit()
+                        .foregroundStyle(tint)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(tint.opacity(0.16), in: Capsule())
+                }
+                // 编辑行内联 +N −M（图2 风格）：让「编辑 X」一眼看出改了多少、点开看 diff。
+                if let matchedDiff {
+                    if matchedDiff.addedCount > 0 {
+                        Text("+\(matchedDiff.addedCount)")
+                            .appFont(relative: -2, weight: .semibold)
+                            .monospacedDigit()
+                            .foregroundStyle(.green)
+                    }
+                    if matchedDiff.removedCount > 0 {
+                        Text("−\(matchedDiff.removedCount)")
+                            .appFont(relative: -2, weight: .semibold)
+                            .monospacedDigit()
+                            .foregroundStyle(.red)
+                    }
+                }
+                if canExpand { disclosureButton }
+            }
+            if expanded && canExpand {
+                detailPanel(diff: matchedDiff)
             }
         }
         .padding(.leading, 9)
         .padding(.trailing, 10)
         .padding(.vertical, 5)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous)
+                .fill(hovering && canExpand ? Theme.controlHover.opacity(0.5) : Color.clear)
+        )
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
         .environment(\.openURL, OpenURLAction { url in
             guard url.scheme == Self.fileScheme else { return .systemAction }
             linkContext.openFile(URL(filePath: url.path))
             return .handled
         })
-        .accessibilityLabel(count > 1 ? "\(accessibleText)（\(count) 次）" : accessibleText)
+        .accessibilityLabel(count > 1 ? "\(display)（\(count) 次）" : display)
+    }
+
+    /// 行尾展开钮：点开显示完整摘要 + 编辑 diff。
+    private var disclosureButton: some View {
+        Button {
+            withAnimation(.easeOut(duration: 0.16)) { expanded.toggle() }
+        } label: {
+            Image(systemName: "chevron.right")
+                .appFont(relative: -3, weight: .semibold)
+                .rotationEffect(.degrees(expanded ? 90 : 0))
+                .foregroundStyle(hovering || expanded ? Theme.accent.opacity(0.85) : .secondary)
+                .frame(width: 14, height: 14)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(expanded ? "收起" : "显示详情")
+    }
+
+    /// 展开区：完整摘要（全路径/命令，可选中）+ 编辑类的逐行 diff + 跳右侧栏看全部。
+    @ViewBuilder
+    private func detailPanel(diff: TurnFileDiff?) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(text)
+                .appFont(relative: -2)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if let diff {
+                InlineDiffFileCardView(file: diff, initiallyExpanded: true)
+                if let summary = turnDiffSummary {
+                    Button { onReviewChanges(summary) } label: {
+                        Label("在审核栏查看全部 diff", systemImage: "arrow.up.forward.app")
+                            .appFont(relative: -3, weight: .medium)
+                            .foregroundStyle(Theme.accentStrong)
+                    }
+                    .buttonStyle(.plain)
+                    .help("在右侧栏「审核」标签查看本轮完整逐行 diff")
+                }
+            }
+        }
+        .padding(.leading, 23)
+        .padding(.top, 1)
+        .transition(.opacity.combined(with: .move(edge: .top)))
+    }
+
+    /// 仅对「改了文件」的动词（编辑/创建/编辑笔记本）匹配本轮 diff；读取等不产生改动的行不挂 diff。
+    private func matchedFileDiff(for target: ToolActivity.FileTarget?) -> TurnFileDiff? {
+        guard let target, let summary = turnDiffSummary, ToolActivityStyle.isMutatingVerb(text) else { return nil }
+        return summary.fileDiff(forRelativePath: target.relativePath)
     }
 
     private func plainString(error: Bool) -> AttributedString {
@@ -647,16 +820,13 @@ private struct InlineToolActivityRow: View {
         return plain
     }
 
-    private var accessibleText: String {
-        ToolActivity.displayText(in: text, workingDirectory: linkContext.workingDirectory)
-    }
-
     private func copy(_ value: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(value, forType: .string)
     }
 
     /// 普通命令文本保持次级色；路径段压缩成文件名并加链接（自定义 scheme，真实路径放 url.path）。
+    /// 链接为中性灰（非蓝），默认无下划线，仅整行 hover 时显示同色下划线——既可辨识可点击，又不喧宾夺主。
     private func linkedString(parts: [ToolActivity.DisplayPart], error: Bool) -> AttributedString {
         parts.reduce(into: AttributedString()) { result, part in
             switch part {
@@ -666,8 +836,11 @@ private struct InlineToolActivityRow: View {
                 result += value
             case .file(let target):
                 var link = AttributedString(target.path)
-                link.foregroundColor = Color(nsColor: .linkColor)
-                link.underlineStyle = .single
+                link.foregroundColor = Self.linkColor
+                // 下划线仅 hover 时出现，且与链接文字同色（通过 LineStyle 的 color 设定）。
+                if hovering {
+                    link.underlineStyle = Text.LineStyle(pattern: .solid, color: Self.linkColor)
+                }
                 if var components = URLComponents(string: "\(Self.fileScheme)://open") {
                     components.path = target.url.path
                     link.link = components.url
@@ -685,10 +858,82 @@ private struct InlineToolActivityRow: View {
     }
 }
 
+/// 「委派任务」行：显示子代理类型/描述 + 状态（进行中/完成/出错），点击在右侧栏展开明细（派发的 prompt + 子代理结果）。
+private struct SubagentActivityRow: View {
+    let task: SubagentTask?
+    let label: String
+    let onOpen: (SubagentTask) -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        let isError = task?.isError == true
+        let done = task?.result != nil
+        Button {
+            if let task { onOpen(task) }
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "person.2.fill")
+                    .appFont(relative: -2, weight: .semibold)
+                    .foregroundStyle(isError ? Color.red.opacity(0.85) : Theme.accent.opacity(0.85))
+                    .frame(width: 15)
+                Text("委派任务")
+                    .appFont(relative: -1, weight: .medium)
+                    .foregroundStyle(.secondary)
+                Text(label)
+                    .appFont(relative: -1)
+                    .foregroundStyle(Color.primary.opacity(0.72))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 6)
+                statusView(done: done, isError: isError)
+                Image(systemName: "sidebar.right")
+                    .appFont(relative: -3, weight: .semibold)
+                    .foregroundStyle(hovering ? Theme.accent.opacity(0.85) : .secondary)
+            }
+            .padding(.leading, 9)
+            .padding(.trailing, 10)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous)
+                    .fill(hovering ? Theme.controlHover.opacity(0.55) : Theme.controlHover.opacity(0.3))
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous)
+                    .stroke(Theme.border.opacity(0.5), lineWidth: 1)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(task == nil)
+        .onHover { hovering = $0 }
+        .help(task == nil ? "" : "在右侧栏查看子任务明细（派发内容 + 子代理结果）")
+    }
+
+    @ViewBuilder
+    private func statusView(done: Bool, isError: Bool) -> some View {
+        if isError {
+            Text("出错").appFont(relative: -2, weight: .medium).foregroundStyle(.red)
+        } else if done {
+            Image(systemName: "checkmark.circle.fill").appFont(relative: -2).foregroundStyle(.green)
+        } else {
+            ProgressView().controlSize(.mini)
+        }
+    }
+}
+
 /// 据工具活动文案的中文动词推断 SF Symbol 图标（与 OutputParser.toolSummary 的动词集对应）。
 private enum ToolActivityStyle {
     static func isError(_ text: String) -> Bool {
         text.hasPrefix("工具出错")
+    }
+
+    /// 「改了文件」的动词（编辑/创建/编辑笔记本）：这些行才挂本轮逐行 diff。
+    static func isMutatingVerb(_ text: String) -> Bool {
+        switch leadingVerb(text) {
+        case "编辑", "创建", "编辑笔记本": return true
+        default: return false
+        }
     }
 
     static func icon(for text: String) -> String {
@@ -748,6 +993,185 @@ private struct ThinkingIndicatorBubble: View {
             }
         }
         .accessibilityLabel("思考中")
+    }
+}
+
+/// AskUserQuestion 卡片：渲染问题与可点选项。
+/// opencode（question.requestID 非空）：agent **原地等待**，提交直接经 reply API 回传、它据此继续。
+/// Claude（requestID 为空）：`-p` 非交互无法回灌进程，提交作为**下一条消息**发出（会话续接）。
+private struct AskUserQuestionCard: View {
+    let question: AskUserQuestion
+    let onAnswer: (AskUserQuestion, [[String]]) -> Void
+    var onReject: (AskUserQuestion) -> Void = { _ in }
+    @State private var selections: [String: Set<String>] = [:] // 问题 id → 已选 label 集合
+    @State private var answered = false
+
+    /// opencode 提问会阻塞等待回答（有 requestID）；Claude 不阻塞、走追加消息。
+    private var waitsForReply: Bool { question.requestID != nil }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            header
+            Text(waitsForReply
+                ? "Agent 正在等待你的选择；选好点「提交」即据此继续。"
+                : "Claude 不会停下来等待；选好点「提交」会作为新消息发给它继续。")
+                .appFont(relative: -3)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            ForEach(question.questions) { item in
+                questionBlock(item)
+            }
+            submitRow
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.accentSoft, in: RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous)
+                .stroke(Theme.accent.opacity(0.35), lineWidth: 1)
+        }
+        .opacity(answered ? 0.72 : 1)
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "questionmark.bubble")
+                .foregroundStyle(Theme.accent)
+            Text("需要你的选择")
+                .appFont(relative: -1, weight: .semibold)
+            Spacer(minLength: 8)
+            if answered {
+                Label("已回答", systemImage: "checkmark.circle.fill")
+                    .appFont(relative: -2, weight: .medium)
+                    .foregroundStyle(.green)
+            }
+        }
+    }
+
+    private func questionBlock(_ item: AskUserQuestion.Item) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                Text(item.title)
+                    .appFont(relative: -1, weight: .medium)
+                    .fixedSize(horizontal: false, vertical: true)
+                if item.multiSelect {
+                    Text("可多选")
+                        .appFont(relative: -3, weight: .medium)
+                        .foregroundStyle(Theme.accentStrong)
+                        .padding(.horizontal, 5).padding(.vertical, 1)
+                        .background(Capsule().fill(Theme.accent.opacity(0.12)))
+                }
+            }
+            ForEach(item.options) { option in
+                optionRow(item: item, option: option)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func optionRow(item: AskUserQuestion.Item, option: AskUserQuestion.Option) -> some View {
+        let isSelected = selections[item.id]?.contains(option.label) == true
+        return Button {
+            toggle(item: item, option: option)
+        } label: {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: selectionSymbol(multiSelect: item.multiSelect, selected: isSelected))
+                    .appFont(relative: -1)
+                    .foregroundStyle(isSelected ? Theme.accent : Color.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(option.label)
+                        .appFont(relative: -1, weight: .medium)
+                        .foregroundStyle(.primary)
+                    if !option.description.isEmpty {
+                        Text(option.description)
+                            .appFont(relative: -3)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous)
+                    .fill(isSelected ? Theme.selected : Theme.panelRaised.opacity(0.6))
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous)
+                    .stroke(isSelected ? Theme.accent.opacity(0.5) : Theme.hairline, lineWidth: 1)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(answered)
+    }
+
+    private var submitRow: some View {
+        HStack(spacing: 10) {
+            Button(action: skip) {
+                Text("跳过")
+                    .appFont(relative: -2, weight: .medium)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(Theme.controlHover.opacity(0.5), in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(answered)
+            .help(waitsForReply ? "拒绝该提问（agent 继续）" : "跳过，不回复")
+            Spacer(minLength: 0)
+            Button(action: submit) {
+                Text(answered ? "已提交" : "提交")
+                    .appFont(relative: -1, weight: .semibold)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 7)
+                    .background(canSubmit ? Theme.accent : Color.secondary.opacity(0.32), in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(!canSubmit)
+            .help(waitsForReply ? "把选择回传给运行中的 agent" : "把选择作为新消息发给 Claude")
+        }
+    }
+
+    private func selectionSymbol(multiSelect: Bool, selected: Bool) -> String {
+        if multiSelect { return selected ? "checkmark.square.fill" : "square" }
+        return selected ? "largecircle.fill.circle" : "circle"
+    }
+
+    private var canSubmit: Bool {
+        !answered && question.questions.allSatisfy { !(selections[$0.id]?.isEmpty ?? true) }
+    }
+
+    private func toggle(item: AskUserQuestion.Item, option: AskUserQuestion.Option) {
+        var set = selections[item.id] ?? []
+        if item.multiSelect {
+            if set.contains(option.label) { set.remove(option.label) } else { set.insert(option.label) }
+        } else {
+            set = [option.label] // 单选：替换
+        }
+        selections[item.id] = set
+    }
+
+    private func submit() {
+        guard canSubmit else { return }
+        onAnswer(question, orderedSelections())
+        answered = true
+    }
+
+    private func skip() {
+        guard !answered else { return }
+        onReject(question)
+        answered = true
+    }
+
+    /// 每题按选项原始顺序导出选中的 label 数组（opencode reply / Claude 文案共用）。
+    private func orderedSelections() -> [[String]] {
+        question.questions.map { item in
+            item.options.map(\.label).filter { selections[item.id]?.contains($0) == true }
+        }
     }
 }
 

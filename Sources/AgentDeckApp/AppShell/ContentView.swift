@@ -4,18 +4,66 @@ import AppKit
 struct ContentView: View {
     @Bindable var workspace: WorkspaceController
     @Environment(\.openWindow) private var openWindow
+    @State private var filePreviewController: FilePreviewController
     @State private var showingHistory = false
     @State private var terminalLaunch: TerminalLaunch?
     @State private var showFiles = false
-    @State private var sidebarWidth: CGFloat = 380 // 右侧栏宽度（可拖左缘横向缩放）
+    /// 右栏宽度以**归一化比例**持久化（跨启动/窗口尺寸保持相近比例）；0=未保存→用默认 600。
+    @AppStorage("app-shell:right-panel-ratio:v2") private var sidebarRatio: Double = 0
+    @State private var sidebarWidthOverride: CGFloat? // 拖拽中的实时宽度（不写盘，松手再落比例）
     @State private var sidebarDragBaseline: CGFloat? // 拖动起始宽度基准
+    @State private var sidebarDragRawWidth: CGFloat? // 拖动中最近一次原始建议宽度（判断是否拖到要关闭）
+    @State private var sidebarSlideX: CGFloat = 0 // 右栏滑入/滑出的水平偏移（0=就位，sidebarWidth=屏外右侧）
+    @State private var sidebarRendered = false // 右栏覆盖层是否在视图树里（打开期间 + 关闭滑出期间为真）
+    @State private var sidebarCloseGeneration = 0 // 守卫延迟关闭：期间又打开则作废
     @State private var mainAreaWidth: CGFloat = 0
-    @State private var sidebarTopFraction: CGFloat = 0.5 // 侧栏内「文件树/编辑器」上下占比（会话内保留，关侧栏不重置）
     @State private var sidebarExpandedFolders: Set<URL> = [] // 侧栏已展开文件夹（会话内保留，关侧栏不丢失）
     @State private var sidebarMode: RightSidebarMode = .files
-    @State private var sidebarSelectedFile: URL?
     @State private var sidebarBrowserURL: URL?
     @State private var selectedReviewSummary: TurnDiffSummary?
+    @State private var selectedSubagent: SubagentTask? // 「委派任务」点击后在右侧栏展示的子任务明细
+
+    init(workspace: WorkspaceController) {
+        self.workspace = workspace
+        _filePreviewController = State(
+            initialValue: FilePreviewController(
+                workspace: workspace.focusedSession?.workingDirectory ?? workspace.workspaceDirectory
+            )
+        )
+    }
+
+    /// 右栏滑入/滑出的弹性动画。约为原来的 2 倍速度（0.5s → 0.26s）。
+    private var sidebarSpring: Animation { .spring(duration: 0.26, bounce: 0.1) }
+
+    /// 当前右栏目标宽度：拖拽时用实时覆盖，否则按保存比例还原并夹紧到当前容器（中间栏至少留 352）。
+    private var sidebarWidth: CGFloat {
+        if let override = sidebarWidthOverride { return override }
+        return SidebarSizing.width(forRatio: CGFloat(sidebarRatio), container: mainAreaWidth)
+    }
+
+    /// 开/合都**布局瞬变**（中间栏立刻定到最终宽度、保持贴底），右栏只作为覆盖层以 offset 滑入/滑出。
+    /// 故关闭时中间栏不必等右栏滑回——`showFiles` 控制的预留空间立刻归零，右栏在其上方滑走。
+    private func openSidebar() {
+        guard !showFiles else { return }
+        sidebarCloseGeneration += 1            // 取消可能在途的延迟移除
+        sidebarRendered = true
+        sidebarSlideX = sidebarWidth           // 右栏先停在屏外右侧（无动画）
+        showFiles = true                       // 预留空间瞬变：中间栏立刻定到最终宽度（无动画）
+        withAnimation(sidebarSpring) { sidebarSlideX = 0 } // 仅 offset 滑入
+    }
+
+    private func closeSidebar() {
+        guard showFiles else { return }
+        sidebarCloseGeneration += 1
+        let generation = sidebarCloseGeneration
+        showFiles = false                      // 预留空间瞬变：中间栏立刻变宽（不等右栏滑回）
+        withAnimation(sidebarSpring) { sidebarSlideX = sidebarWidth } // 覆盖层滑出
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.32) {
+            guard generation == sidebarCloseGeneration else { return } // 期间又打开了 → 不移除
+            sidebarRendered = false             // 滑出完成后再移除覆盖层
+            sidebarSlideX = 0
+        }
+    }
 
     var body: some View {
         HStack(spacing: 14) {
@@ -29,6 +77,15 @@ struct ContentView: View {
         }
         .onChange(of: workspace.focusedSessionID) { _, _ in
             selectedReviewSummary = nil
+            selectedSubagent = nil
+            if let directory = workspace.focusedSession?.workingDirectory,
+               directory.standardizedFileURL != filePreviewController.workspace.standardizedFileURL {
+                filePreviewController.request(.changeWorkspace(directory)) { committed in
+                    if case .changeWorkspace(let url) = committed {
+                        filePreviewController.setWorkspace(url)
+                    }
+                }
+            }
         }
         .background(GlassBackground())
         .background(AppWindowConfigurator())
@@ -209,44 +266,51 @@ struct ContentView: View {
             mainPage
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .onAppear { mainAreaWidth = proxy.size.width }
-                .onChange(of: proxy.size.width) { oldValue, newValue in
-                    adjustSidebarForWindowResize(oldWidth: oldValue, newWidth: newValue)
-                }
+                // 右栏宽度按比例从 mainAreaWidth 派生：窗口变化时只需更新容器宽，宽度自动按比例还原（并夹紧）。
+                .onChange(of: proxy.size.width) { _, newValue in mainAreaWidth = newValue }
         }
-    }
-
-    private func adjustSidebarForWindowResize(oldWidth: CGFloat, newWidth: CGFloat) {
-        mainAreaWidth = newWidth
-        guard showFiles, sidebarDragBaseline == nil, oldWidth > 0 else {
-            sidebarWidth = min(sidebarWidth, SidebarSizing.maxSidebarWidth(for: newWidth))
-            return
-        }
-        sidebarWidth = SidebarSizing.widthAfterWindowResize(
-            currentWidth: sidebarWidth,
-            oldContainerWidth: oldWidth,
-            newContainerWidth: newWidth
-        )
     }
 
     /// 右侧栏左缘的横向缩放手柄：拖动改变侧栏宽度（向左变宽），用 NSView 接管鼠标、不移动窗口。
+    /// 对齐 Codex：≈16px 透明热区（跨在分隔线两侧）、拖到小于最小宽直接关闭、双击复位默认宽度。
     private var sidebarResizeHandle: some View {
         ZStack(alignment: .leading) {
+            Rectangle().fill(Theme.border.opacity(0.72)).frame(width: 1)
             ResizeDivider(
                 axis: .horizontal,
                 onBegan: { sidebarDragBaseline = sidebarWidth },
                 onChanged: { dx in
                     let base = sidebarDragBaseline ?? sidebarWidth
-                    sidebarWidth = min(
-                        max(base - dx, SidebarSizing.minWidth),
-                        SidebarSizing.maxSidebarWidth(for: mainAreaWidth)
-                    )
+                    let raw = base - dx // 向左拖（dx<0）→ 变宽
+                    sidebarDragRawWidth = raw
+                    sidebarWidthOverride = SidebarSizing.clampWidth(raw, container: mainAreaWidth)
                 },
-                onEnded: { sidebarDragBaseline = nil }
+                onEnded: {
+                    let raw = sidebarDragRawWidth
+                    let width = sidebarWidthOverride ?? sidebarWidth
+                    sidebarDragBaseline = nil
+                    sidebarDragRawWidth = nil
+                    sidebarWidthOverride = nil
+                    if let raw, SidebarSizing.shouldCloseWhileDragging(rawWidth: raw) {
+                        closeSidebar() // 拖到小于最小宽 → 直接关闭
+                    } else {
+                        // 落定为归一化比例（持久化）。
+                        sidebarRatio = Double(SidebarSizing.ratio(forWidth: width, container: mainAreaWidth))
+                    }
+                },
+                onDoubleClick: {
+                    withAnimation(sidebarSpring) {
+                        sidebarRatio = Double(SidebarSizing.ratio(
+                            forWidth: SidebarSizing.defaultWidth, container: mainAreaWidth
+                        ))
+                    }
+                }
             )
-            .frame(width: 8)
-            Rectangle().fill(Theme.border.opacity(0.72)).frame(width: 1)
+            .frame(width: 16)
+            .offset(x: -8) // 让 16px 热区跨在分隔线两侧（各 8px），尽量少压住右栏内容
+            .frame(maxHeight: .infinity)
         }
-        .frame(width: 8)
+        .frame(width: 1)
         .frame(maxHeight: .infinity)
     }
 
@@ -256,43 +320,32 @@ struct ContentView: View {
             EmptyRegistryView(message: registryMessage)
                 .padding(18)
         } else if let session = workspace.focusedSession {
-            HStack(spacing: 0) {
+            ZStack(alignment: .topTrailing) {
                 VStack(spacing: 0) {
                     VStack(spacing: 0) {
                         AgentPageHeader(
                             session: session,
                             terminalLaunch: $terminalLaunch,
                             showFiles: showFiles,
-                            onToggleFiles: {
-                                if ReviewSelectionPolicy.shouldClearForGlobalSidebarToggle(
-                                    sidebarIsVisible: showFiles,
-                                    mode: sidebarMode
-                                ) {
-                                    selectedReviewSummary = nil
-                                }
-                                withAnimation(.easeInOut(duration: 0.28)) {
-                                    showFiles.toggle()
-                                }
-                            }
+                            onToggleFiles: toggleRightSidebar
                         )
                         ChatPaneView(
                             session: session,
                             workspace: workspace,
+                            sidebarVisible: showFiles,
                             onClose: { workspace.closeSession(id: session.id) },
-                            onOpenFile: { url in
-                                sidebarSelectedFile = url
-                                sidebarMode = .files
-                                withAnimation(.easeInOut(duration: 0.28)) { showFiles = true }
-                            },
+                            onOpenFile: openFileInPreview,
                             onOpenWebURL: { url in
                                 sidebarBrowserURL = url
-                                sidebarMode = .browser
-                                withAnimation(.easeInOut(duration: 0.28)) { showFiles = true }
+                                openSidebarMode(.browser)
                             },
                             onReviewChanges: { summary in
                                 selectedReviewSummary = summary
-                                sidebarMode = .review
-                                withAnimation(.easeInOut(duration: 0.28)) { showFiles = true }
+                                openSidebarMode(.review)
+                            },
+                            onShowSubagent: { task in
+                                selectedSubagent = task
+                                openSidebarMode(.subagent)
                             },
                             onClaudeLogin: {
                                 withAnimation(.easeInOut(duration: 0.28)) {
@@ -315,8 +368,11 @@ struct ContentView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // 为右栏预留的空间**瞬变**（开=右栏宽、合=0），故中间栏开/合都立刻定到最终宽度、不等滑动。
+                .padding(.trailing, showFiles ? sidebarWidth : 0)
 
-                if showFiles {
+                // 右栏作为覆盖层只用 offset 滑入/滑出，不参与中间栏的布局——这样关闭时中间栏不用等它滑回。
+                if sidebarRendered {
                     RightSidebar(
                         workingDirectory: session.workingDirectory,
                         mode: Binding(
@@ -328,23 +384,66 @@ struct ContentView: View {
                                 sidebarMode = newMode
                             }
                         ),
-                        selectedFile: $sidebarSelectedFile,
+                        previewController: filePreviewController,
                         browserURL: $sidebarBrowserURL,
-                        topFraction: $sidebarTopFraction,
                         expandedFolders: $sidebarExpandedFolders,
-                        reviewSummary: selectedReviewSummary ?? session.lastTurnDiffSummary
+                        reviewSummary: selectedReviewSummary ?? session.lastTurnDiffSummary,
+                        selectedSubagent: selectedSubagent
                     ) {
-                        withAnimation(.easeInOut(duration: 0.28)) { showFiles = false }
+                        closeSidebar()
                     }
                     .frame(width: sidebarWidth)
+                    .frame(maxHeight: .infinity)
                     .overlay(alignment: .leading) { sidebarResizeHandle }
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                    .offset(x: sidebarSlideX)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped() // 右栏滑出时不绘制到窗口外
         } else {
             EmptyRegistryView(message: "Add an agent to start chatting.")
                 .padding(18)
+        }
+    }
+
+    private func openFileInPreview(_ url: URL) {
+        filePreviewController.request(.openFile(url)) { committed in
+            guard case .openFile(let fileURL) = committed else { return }
+            filePreviewController.open(fileURL)
+            sidebarMode = RightSidebarNavigation.destinationForOpenedFile
+            openSidebar()
+        }
+    }
+
+    private func openSidebarMode(_ mode: RightSidebarMode) {
+        filePreviewController.request(.switchMode(mode)) { committed in
+            guard case .switchMode(let target) = committed else { return }
+            sidebarMode = target
+            openSidebar()
+        }
+    }
+
+    private func toggleRightSidebar() {
+        if !showFiles {
+            if ReviewSelectionPolicy.shouldClearForGlobalSidebarToggle(
+                sidebarIsVisible: false,
+                mode: sidebarMode
+            ) {
+                selectedReviewSummary = nil
+            }
+            openSidebar()
+            return
+        }
+
+        filePreviewController.request(.closeSidebar) { committed in
+            guard case .closeSidebar = committed else { return }
+            if ReviewSelectionPolicy.shouldClearForGlobalSidebarToggle(
+                sidebarIsVisible: true,
+                mode: sidebarMode
+            ) {
+                selectedReviewSummary = nil
+            }
+            closeSidebar()
         }
     }
 
@@ -627,7 +726,11 @@ private struct AgentPageHeader: View {
             HeaderIconButton(systemImage: "arrow.triangle.branch", help: "Git 面板") {
                 showingGit = true
             }
-            HeaderIconButton(systemImage: "sidebar.right", isActive: showFiles, help: "右侧栏：文件 / 浏览器") {
+            HeaderIconButton(
+                systemImage: "sidebar.right",
+                isActive: showFiles,
+                help: "右侧栏：文件 / 预览 / 浏览器 / 审核"
+            ) {
                 onToggleFiles()
             }
             HeaderIconButton(systemImage: "terminal", isActive: terminalLaunch != nil, help: "终端（下方）") {

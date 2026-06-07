@@ -26,6 +26,8 @@ enum AssistantContentBlock: Equatable {
     case inlineError(String)
     /// 内联工具活动（如「读取 foo.swift」「运行 ls」）。按时间顺序穿插在文本块之间。
     case toolCall(String)
+    /// 委派任务行：携带子任务 id（链接到 message.subagentTasks）与展示标签。点击可在右侧栏看明细。
+    case subagentRef(id: String, label: String)
 }
 
 enum MessagePresentation {
@@ -56,7 +58,13 @@ enum MessagePresentation {
                     switch segment {
                     case .tool(let summary):
                         let cleaned = clean(summary)
-                        if !cleaned.isEmpty { blocks.append(.toolCall(cleaned)) }
+                        if cleaned.isEmpty {
+                            break
+                        } else if let sub = SubagentMarker.decode(cleaned) {
+                            blocks.append(.subagentRef(id: sub.id, label: sub.label))
+                        } else {
+                            blocks.append(.toolCall(cleaned))
+                        }
                     case .text(let prose):
                         blocks.append(contentsOf: splitInlineErrors(in: prose))
                     }
@@ -101,6 +109,8 @@ enum MessagePresentation {
                     text
                 case .toolCall(let text):
                     "› \(text)"
+                case .subagentRef(_, let label):
+                    "› 委派任务：\(label)"
                 case .thinking(let text):
                     "思考过程：\n\(text)"
                 }
@@ -323,27 +333,23 @@ enum RunProcessDetailPresentation {
     static let animatesLayoutOnToggle = false
     static let usesMovingTransition = false
 
+    /// 折叠只针对**思考过程**：折叠时隐藏思考块，但工具活动行（读取/编辑/运行…）始终保留——
+    /// 这样既能在输出结束后自动收起冗长思考（issue 3），又不会把「编辑 X +N −M」这类带 diff 的工具行一并藏掉（issue 4）。
     static func shouldRender(_ block: AssistantContentBlock, detailsHidden: Bool) -> Bool {
         guard detailsHidden else { return true }
         switch block {
-        case .thinking, .toolCall:
+        case .thinking:
             return false
-        case .text, .inlineError:
+        case .text, .inlineError, .toolCall, .subagentRef:
             return true
         }
     }
 
-    static func containsProcessDetails(
-        toolCalls: [String],
-        blocks: [MessagePresentation.CollapsedBlock]
-    ) -> Bool {
-        !toolCalls.isEmpty || blocks.contains { collapsed in
-            switch collapsed.block {
-            case .thinking, .toolCall:
-                return true
-            case .text, .inlineError:
-                return false
-            }
+    /// 是否含可折叠的思考块（决定运行时间行是否显示折叠箭头、是否在结束时自动折叠）。
+    static func containsCollapsibleThinking(_ blocks: [MessagePresentation.CollapsedBlock]) -> Bool {
+        blocks.contains { collapsed in
+            if case .thinking = collapsed.block { return true }
+            return false
         }
     }
 }

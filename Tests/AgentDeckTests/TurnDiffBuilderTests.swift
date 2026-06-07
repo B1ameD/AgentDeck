@@ -119,6 +119,19 @@ final class InlineDiffPreviewTests: XCTestCase {
         XCTAssertEqual(model.hiddenFileCount, 2)
     }
 
+    func testFileDiffMatchesExactRelativePathThenBasename() {
+        let summary = TurnDiffSummary(workingDirectory: "/tmp", files: [
+            TurnFileDiff(path: "Sources/App/Foo.swift", status: .modified, diff: diff(added: 1)),
+            TurnFileDiff(path: "README.md", status: .added, diff: diff(added: 1))
+        ])
+        // 精确相对路径命中。
+        XCTAssertEqual(summary.fileDiff(forRelativePath: "Sources/App/Foo.swift")?.path, "Sources/App/Foo.swift")
+        // 仅文件名时按 basename 兜底命中。
+        XCTAssertEqual(summary.fileDiff(forRelativePath: "Foo.swift")?.path, "Sources/App/Foo.swift")
+        // 不存在的返回 nil。
+        XCTAssertNil(summary.fileDiff(forRelativePath: "Missing.swift"))
+    }
+
     func testPreviewLimitsTotalLines() {
         let summary = TurnDiffSummary(workingDirectory: "/tmp", files: [
             TurnFileDiff(path: "big.txt", status: .added, diff: diff(added: 200))
