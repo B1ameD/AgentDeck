@@ -12,3 +12,8 @@ def test_maa_mcp_error_basic():
 def test_maa_mcp_error_with_detail():
     err = MaaMCPError("TEST_ERROR", "test message", detail={"key": "value"})
     assert err.detail == {"key": "value"}
+
+
+def test_maa_mcp_error_default_detail():
+    err = MaaMCPError("TEST_ERROR", "test message")
+    assert err.detail == {}

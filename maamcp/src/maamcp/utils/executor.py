@@ -15,10 +15,11 @@ async def run_command(
     cmd: list[str],
     *,
     timeout: float = 30.0,
-    cwd: str = None,
-    env: dict = None,
+    cwd: str | None = None,
+    env: dict | None = None,
 ) -> CommandResult:
     """Run a shell command asynchronously with timeout."""
+    cmd_str = " ".join(cmd)
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -30,17 +31,17 @@ async def run_command(
         stdout_bytes, stderr_bytes = await asyncio.wait_for(
             proc.communicate(), timeout=timeout
         )
-    except TimeoutError:
+    except asyncio.TimeoutError:
         proc.kill()
-        await proc.wait()
+        await asyncio.wait_for(proc.wait(), timeout=5.0)
         raise MaaMCPError(
             "COMMAND_TIMEOUT",
-            f"Command timed out after {timeout}s: {' '.join(cmd)}",
+            f"Command timed out after {timeout}s: {cmd_str}",
         )
     except Exception as e:
         raise MaaMCPError(
             "COMMAND_EXEC_ERROR",
-            f"Failed to execute command: {' '.join(cmd)}: {e}",
+            f"Failed to execute command: {cmd_str}: {e}",
         )
 
     stdout = stdout_bytes.decode("utf-8", errors="replace").strip()
@@ -49,7 +50,7 @@ async def run_command(
     if proc.returncode != 0:
         raise MaaMCPError(
             "COMMAND_FAILED",
-            f"Command failed with code {proc.returncode}: {' '.join(cmd)}",
+            f"Command failed with code {proc.returncode}: {cmd_str}",
             detail={"stdout": stdout, "stderr": stderr, "returncode": proc.returncode},
         )
 
