@@ -2,6 +2,29 @@ import XCTest
 @testable import AgentDeckApp
 
 final class AskUserQuestionTests: XCTestCase {
+    func testAnsweredQuestionToolRecordRoundTripsSelections() throws {
+        let question = AskUserQuestion(questions: [
+            .init(
+                header: "测试",
+                question: "接下来测试什么？",
+                multiSelect: true,
+                options: [.init(label: "Diff"), .init(label: "MCP")]
+            )
+        ])
+        var record = QuestionToolRecord(question: question)
+        record.answer([["Diff", "MCP"]])
+
+        let data = try JSONEncoder().encode(record)
+        let restored = try JSONDecoder().decode(QuestionToolRecord.self, from: data)
+
+        XCTAssertEqual(restored.resolution, .answered([["Diff", "MCP"]]))
+        XCTAssertFalse(restored.isPending)
+        XCTAssertEqual(restored.detailLines, [
+            "Question：接下来测试什么？",
+            "Choose：Diff / MCP"
+        ])
+    }
+
     func testIsAskUserQuestionToleratesWritingVariants() {
         XCTAssertTrue(AskUserQuestionParser.isAskUserQuestion(toolName: "AskUserQuestion"))
         XCTAssertTrue(AskUserQuestionParser.isAskUserQuestion(toolName: "ask_user_question"))

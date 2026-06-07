@@ -299,15 +299,47 @@ final class OpenCodeStreamingTests: XCTestCase {
 
         await session.send("配色")
 
-        // 渲染成可点选卡片消息，并带上 opencode 回传句柄 requestID。
-        let question = try XCTUnwrap(session.messages.first { $0.kind == .question }?.question)
+        // 渲染成 assistant 时间线里的可点选询问，并带上 opencode 回传句柄 requestID。
+        let assistant = try XCTUnwrap(session.messages.first { $0.role == .assistant })
+        let record = try XCTUnwrap(assistant.questionTools.first)
+        let question = record.question
         XCTAssertEqual(question.requestID, "que_1")
         XCTAssertEqual(question.questions.first?.options.map(\.label), ["蓝", "绿"])
 
         // 作答 → 经 streamer.reply 把答案回传给运行中的 agent（requestID + 选中 label 数组）。
-        await session.answerQuestion(question, selections: [["蓝"]])
+        await session.answerQuestion(recordID: record.id, question: question, selections: [["蓝"]])
         XCTAssertEqual(streamer.replies.first?.requestID, "que_1")
         XCTAssertEqual(streamer.replies.first?.answers, [["蓝"]])
+        XCTAssertEqual(
+            session.messages.first { $0.id == assistant.id }?.questionTools.first?.resolution,
+            .answered([["蓝"]])
+        )
+    }
+
+    @MainActor
+    func testOpenCodeQuestionStaysBetweenEarlierAndLaterAssistantText() async throws {
+        let streamer = FakeOpenCodeStreamer(.yield([
+            #"{"type":"step_start","sessionID":"ses_order","part":{}}"#,
+            #"{"type":"text","sessionID":"ses_order","part":{"text":"提问之前。"}}"#,
+            #"{"type":"question","sessionID":"ses_order","requestID":"que_order","input":{"questions":[{"question":"继续吗？","header":"确认","options":[{"label":"继续"},{"label":"停止"}],"multiple":false}]}}"#,
+            #"{"type":"text","sessionID":"ses_order","part":{"text":"提问之后。"}}"#
+        ]))
+        let session = AgentSession(
+            agent: Self.openCodeConfig(),
+            workingDirectory: FileManager.default.temporaryDirectory,
+            runner: StubRunner(stdout: "X"),
+            openCodeStreamer: streamer
+        )
+
+        await session.send("测试顺序")
+
+        let assistant = try XCTUnwrap(session.messages.first { $0.role == .assistant })
+        let record = try XCTUnwrap(assistant.questionTools.first)
+        XCTAssertEqual(MessagePresentation.assistantTimelineBlocks(in: assistant.text), [
+            .init(block: .text("提问之前。"), count: 1),
+            .init(block: .questionRef(id: record.id), count: 1),
+            .init(block: .text("提问之后。"), count: 1)
+        ])
     }
 
     @MainActor
@@ -345,6 +377,65 @@ final class OpenCodeStreamingTests: XCTestCase {
         XCTAssertEqual(streamer.requests.count, 2)
         XCTAssertNil(streamer.requests.first?.continueSessionID)
         XCTAssertEqual(streamer.requests.last?.continueSessionID, "ses_abc") // 第二轮续接首轮会话
+    }
+
+    @MainActor
+    func testOpenCodeSubagentBecomesClickableDetail() async throws {
+        let streamer = FakeOpenCodeStreamer(.yield([
+            #"{"type":"step_start","sessionID":"ses_sub","part":{}}"#,
+            #"{"type":"text","sessionID":"ses_sub","part":{"type":"text","text":"我来委派一个子代理。"}}"#,
+            #"{"type":"tool_use","sessionID":"ses_sub","part":{"type":"tool","id":"prt_1","callID":"call_1","tool":"task","state":{"status":"completed","input":{"subagent_type":"Explore","description":"检查项目结构","prompt":"统计模块并总结"},"output":"项目包含 3 个模块"}}}"#
+        ]))
+        let session = AgentSession(
+            agent: Self.openCodeConfig(),
+            workingDirectory: FileManager.default.temporaryDirectory,
+            runner: StubRunner(stdout: "X"),
+            openCodeStreamer: streamer
+        )
+
+        await session.send("调用一个 Explore subagent 检查当前项目结构")
+
+        let assistant = try XCTUnwrap(session.messages.first { $0.role == .assistant })
+        XCTAssertEqual(assistant.subagentTasks.count, 1)
+        let task = try XCTUnwrap(assistant.subagentTasks.first)
+        XCTAssertEqual(task.id, "prt_1")
+        XCTAssertEqual(task.agentType, "Explore")
+        XCTAssertEqual(task.taskDescription, "检查项目结构")
+        XCTAssertEqual(task.prompt, "统计模块并总结")
+        XCTAssertEqual(task.result, "项目包含 3 个模块")
+        XCTAssertFalse(task.isError)
+
+        // 展示层据标记解析出可点击的委派行；且没有重复的普通「委派任务」工具行。
+        let blocks = MessagePresentation.assistantBlocks(in: assistant.text)
+        XCTAssertTrue(blocks.contains(.subagentRef(id: "prt_1", label: task.rowLabel)))
+        XCTAssertFalse(blocks.contains(.toolCall("委派任务")))
+    }
+
+    @MainActor
+    func testOpenCodeSubagentCompletedTwiceDoesNotDuplicate() async throws {
+        // opencode 可能为同一 tool part 发两次 completed 快照：upsert 应只保留一行、仅更新结果。
+        let streamer = FakeOpenCodeStreamer(.yield([
+            #"{"type":"step_start","sessionID":"ses_dup","part":{}}"#,
+            #"{"type":"tool_use","sessionID":"ses_dup","part":{"type":"tool","id":"prt_9","tool":"task","state":{"status":"completed","input":{"subagent_type":"Explore","description":"D","prompt":"P"},"output":"first"}}}"#,
+            #"{"type":"tool_use","sessionID":"ses_dup","part":{"type":"tool","id":"prt_9","tool":"task","state":{"status":"completed","input":{"subagent_type":"Explore","description":"D","prompt":"P"},"output":"second"}}}"#
+        ]))
+        let session = AgentSession(
+            agent: Self.openCodeConfig(),
+            workingDirectory: FileManager.default.temporaryDirectory,
+            runner: StubRunner(stdout: "X"),
+            openCodeStreamer: streamer
+        )
+
+        await session.send("委派")
+
+        let assistant = try XCTUnwrap(session.messages.first { $0.role == .assistant })
+        XCTAssertEqual(assistant.subagentTasks.count, 1) // 不重复建任务
+        XCTAssertEqual(assistant.subagentTasks.first?.result, "second") // 后一次结果覆盖
+        let refs = MessagePresentation.assistantBlocks(in: assistant.text).filter {
+            if case .subagentRef = $0 { return true }
+            return false
+        }
+        XCTAssertEqual(refs.count, 1) // 只有一行委派
     }
 
     // MARK: - 真·端到端（默认跳过；设 AGENTDECK_LIVE_OPENCODE=1 且本机装了 opencode 才跑）

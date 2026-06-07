@@ -27,6 +27,8 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
     public var turnDiffSummary: TurnDiffSummary?
     /// AskUserQuestion 卡片的结构化问题（kind == .question 时非空）。
     public var question: AskUserQuestion?
+    /// 按 assistant 输出时间线排列的提问工具记录。待回答时显示卡片，回答后原位折叠为「询问」详情。
+    public var questionTools: [QuestionToolRecord]
     /// 本条消息里「委派任务」(Task/Agent 子代理) 的明细：派发的类型/描述/prompt 与子代理返回的最终结果。
     /// 内联「委派任务」行据 id 链接到这里，点击在右侧栏展开。
     public var subagentTasks: [SubagentTask]
@@ -44,6 +46,7 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
         kind: Kind = .normal,
         turnDiffSummary: TurnDiffSummary? = nil,
         question: AskUserQuestion? = nil,
+        questionTools: [QuestionToolRecord] = [],
         subagentTasks: [SubagentTask] = [],
         runStartedAt: Date? = nil,
         runEndedAt: Date? = nil
@@ -57,6 +60,7 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
         self.kind = kind
         self.turnDiffSummary = turnDiffSummary
         self.question = question
+        self.questionTools = questionTools
         self.subagentTasks = subagentTasks
         self.runStartedAt = runStartedAt
         self.runEndedAt = runEndedAt
@@ -72,6 +76,7 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
         case kind
         case turnDiffSummary
         case question
+        case questionTools
         case subagentTasks
         case runStartedAt
         case runEndedAt
@@ -88,6 +93,7 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
         kind = try container.decodeIfPresent(Kind.self, forKey: .kind) ?? .normal
         turnDiffSummary = try container.decodeIfPresent(TurnDiffSummary.self, forKey: .turnDiffSummary)
         question = try container.decodeIfPresent(AskUserQuestion.self, forKey: .question)
+        questionTools = try container.decodeIfPresent([QuestionToolRecord].self, forKey: .questionTools) ?? []
         subagentTasks = try container.decodeIfPresent([SubagentTask].self, forKey: .subagentTasks) ?? []
         runStartedAt = try container.decodeIfPresent(Date.self, forKey: .runStartedAt)
         runEndedAt = try container.decodeIfPresent(Date.self, forKey: .runEndedAt)
@@ -141,6 +147,20 @@ public enum SubagentMarker {
         let label = String(rest[rest.index(after: sep)...])
         guard !id.isEmpty else { return nil }
         return (id, label)
+    }
+}
+
+/// 把提问记录 id 藏入工具时间线标记，展示层再从 message.questionTools 取结构化内容。
+public enum QuestionMarker {
+    private static let prefix = "\u{1F}question\u{1F}"
+
+    public static func encode(id: UUID) -> String {
+        prefix + id.uuidString
+    }
+
+    public static func decode(_ summary: String) -> UUID? {
+        guard summary.hasPrefix(prefix) else { return nil }
+        return UUID(uuidString: String(summary.dropFirst(prefix.count)))
     }
 }
 

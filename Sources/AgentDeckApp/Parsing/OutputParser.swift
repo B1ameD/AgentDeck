@@ -227,6 +227,10 @@ public final class OutputParser {
             pendingToolID = nil
             pendingToolInput = ""
             pendingToolStartInput = ""
+            // AgentDeck 内置 MCP ask_user：提问卡片已由 MCP 路径（AskUserBroker）呈现，抑制其工具活动行避免重复。
+            if AskUserMCPServer.isAskUserToolName(name) {
+                return nil
+            }
             // AskUserQuestion 是「问用户」的交互工具：不压成一行活动摘要，而是把 input JSON 原样上抛，
             // 由会话层解析成可点选卡片（见 AskUserQuestionParser / AgentSession）。
             if AskUserQuestionParser.isAskUserQuestion(toolName: name) {
@@ -333,7 +337,17 @@ public final class OutputParser {
               let state = part["state"] as? [String: Any] else { return nil }
 
         let name = (part["tool"] as? String) ?? "工具"
-        if state["status"] as? String == "error" {
+        let status = state["status"] as? String
+
+        // 委派任务（task/agent/subagent）：opencode 只在工具完成/出错时给出整条 part，
+        // 直接生成「完成态」结构化委派事件（含 id/类型/描述/prompt/result），由会话层 upsert 成可点击明细。
+        if isSubagentTool(name), status == "completed" || status == "error",
+           let id = openCodeToolCallID(in: part),
+           let event = openCodeSubagentEvent(id: id, state: state, isError: status == "error") {
+            return event
+        }
+
+        if status == "error" {
             let error = ((state["error"] as? String) ?? "").replacingOccurrences(of: "\n", with: " ")
             let compact = error.count > 100 ? String(error.prefix(100)) + "…" : error
             let detail = compact.isEmpty ? name : "\(name) \(compact)"
@@ -349,6 +363,34 @@ public final class OutputParser {
             inputJSON = ""
         }
         return OutputEvent(kind: .tool, text: toolSummary(name: name, inputJSON: inputJSON))
+    }
+
+    /// opencode tool part 的稳定调用 id：优先 part.id（部件 id），回落 callID（provider 调用 id）。
+    private static func openCodeToolCallID(in part: [String: Any]) -> String? {
+        for key in ["id", "callID"] {
+            if let value = (part[key] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty {
+                return value
+            }
+        }
+        return nil
+    }
+
+    /// 从 opencode 完成/出错的 task 工具 part 构造「完成态」委派事件：一次性带齐
+    /// id/类型/描述/prompt/result/isError/done。input 取自 state.input（subagent_type/description/prompt），
+    /// 结果取自 state.output（出错时取 state.error）。
+    static func openCodeSubagentEvent(id: String, state: [String: Any], isError: Bool) -> OutputEvent? {
+        let input = state["input"] as? [String: Any] ?? [:]
+        let result = isError ? (state["error"] as? String) : (state["output"] as? String)
+        let payload: [String: Any] = [
+            "id": id,
+            "agentType": (input["subagent_type"] as? String) ?? (input["subagentType"] as? String) ?? "",
+            "description": (input["description"] as? String) ?? "",
+            "prompt": (input["prompt"] as? String) ?? "",
+            "result": result ?? "",
+            "isError": isError,
+            "done": true
+        ]
+        return subagentEvent(payload)
     }
 
     /// 工具名是否为「委派任务」(Task/Agent 子代理)。与 actionVerb 的「委派任务」集对齐。

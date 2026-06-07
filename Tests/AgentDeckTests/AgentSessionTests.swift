@@ -3,6 +3,17 @@ import XCTest
 
 @MainActor
 final class AgentSessionTests: XCTestCase {
+    // 这些用例断言纯净的 Claude CLI 参数；关掉 MCP 注入避免动态 --mcp-config（端口/会话 id 每次都变）干扰。
+    override func setUp() {
+        super.setUp()
+        AskUserMCPServer.injectionEnabled = false
+    }
+
+    override func tearDown() {
+        AskUserMCPServer.injectionEnabled = true
+        super.tearDown()
+    }
+
     func testSessionAppendsUserAndAssistantMessages() async {
         let config = AgentConfig(
             id: "echo",
@@ -698,9 +709,12 @@ final class AgentSessionTests: XCTestCase {
 
         await session.send("go")
 
-        let questionMessage = session.messages.first { $0.kind == .question }
-        XCTAssertNotNil(questionMessage, "AskUserQuestion 应渲染为一条 question 卡片消息")
-        XCTAssertEqual(questionMessage?.question?.questions.first?.options.map(\.label), ["OAuth", "API Key"])
+        let assistant = session.messages.first { $0.role == .assistant && !$0.questionTools.isEmpty }
+        XCTAssertNotNil(assistant, "AskUserQuestion 应插入 assistant 时间线")
+        XCTAssertEqual(
+            assistant?.questionTools.first?.question.questions.first?.options.map(\.label),
+            ["OAuth", "API Key"]
+        )
     }
 
     func testSubagentDelegationAndResultPopulateMessageTasks() async {

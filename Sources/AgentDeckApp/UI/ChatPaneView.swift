@@ -42,8 +42,28 @@ struct ChatPaneView: View {
                         onOpenFile: onOpenFile,
                         onOpenWebURL: onOpenWebURL,
                         onReviewChanges: onReviewChanges,
-                        onAnswerQuestion: { q, selections in Task { await session.answerQuestion(q, selections: selections) } },
-                        onRejectQuestion: { q in Task { await session.rejectQuestion(q) } },
+                        onAnswerQuestion: { record, question, selections in
+                            Task {
+                                if let record {
+                                    await session.answerQuestion(
+                                        recordID: record.id,
+                                        question: question,
+                                        selections: selections
+                                    )
+                                } else {
+                                    await session.answerQuestion(question, selections: selections)
+                                }
+                            }
+                        },
+                        onRejectQuestion: { record, question in
+                            Task {
+                                if let record {
+                                    await session.rejectQuestion(recordID: record.id, question: question)
+                                } else {
+                                    await session.rejectQuestion(question)
+                                }
+                            }
+                        },
                         onShowSubagent: onShowSubagent
                     )
                         .transition(.asymmetric(
@@ -200,8 +220,8 @@ private struct MessageBubble: View {
     let onOpenFile: (URL) -> Void
     let onOpenWebURL: (URL) -> Void
     var onReviewChanges: (TurnDiffSummary) -> Void = { _ in }
-    var onAnswerQuestion: (AskUserQuestion, [[String]]) -> Void = { _, _ in }
-    var onRejectQuestion: (AskUserQuestion) -> Void = { _ in }
+    var onAnswerQuestion: (QuestionToolRecord?, AskUserQuestion, [[String]]) -> Void = { _, _, _ in }
+    var onRejectQuestion: (QuestionToolRecord?, AskUserQuestion) -> Void = { _, _ in }
     var onShowSubagent: (SubagentTask) -> Void = { _ in }
     @State private var copied = false
     @State private var hovering = false
@@ -276,9 +296,12 @@ private struct MessageBubble: View {
                 runStartedAt: message.runStartedAt,
                 runEndedAt: message.runEndedAt,
                 turnDiffSummary: message.turnDiffSummary,
+                questionTools: message.questionTools,
                 subagentTasks: message.subagentTasks,
                 linkContext: linkContext,
                 onReviewChanges: onReviewChanges,
+                onAnswerQuestion: onAnswerQuestion,
+                onRejectQuestion: onRejectQuestion,
                 onShowSubagent: onShowSubagent
             )
         } else if message.role == .error {
@@ -295,7 +318,11 @@ private struct MessageBubble: View {
             if message.kind == .changeReview {
                 changeReviewSummary
             } else if message.kind == .question, let question = message.question {
-                AskUserQuestionCard(question: question, onAnswer: onAnswerQuestion, onReject: onRejectQuestion)
+                AskUserQuestionCard(
+                    question: question,
+                    onAnswer: { onAnswerQuestion(nil, question, $0) },
+                    onReject: { onRejectQuestion(nil, question) }
+                )
             } else {
                 MarkdownText(content: message.text, linkContext: linkContext)
             }
@@ -410,9 +437,12 @@ private struct AssistantMessageContent: View {
     let runStartedAt: Date?
     let runEndedAt: Date?
     var turnDiffSummary: TurnDiffSummary? = nil
+    var questionTools: [QuestionToolRecord] = []
     var subagentTasks: [SubagentTask] = []
     let linkContext: MessageLinkContext
     var onReviewChanges: (TurnDiffSummary) -> Void = { _ in }
+    var onAnswerQuestion: (QuestionToolRecord?, AskUserQuestion, [[String]]) -> Void = { _, _, _ in }
+    var onRejectQuestion: (QuestionToolRecord?, AskUserQuestion) -> Void = { _, _ in }
     var onShowSubagent: (SubagentTask) -> Void = { _ in }
     @State private var processDetailsHidden = false
 
@@ -453,6 +483,18 @@ private struct AssistantMessageContent: View {
                             turnDiffSummary: turnDiffSummary,
                             onReviewChanges: onReviewChanges
                         )
+                    case .questionRef(let id):
+                        if let record = questionTools.first(where: { $0.id == id }) {
+                            QuestionToolTimelineBlock(
+                                record: record,
+                                onAnswer: { selections in
+                                    onAnswerQuestion(record, record.question, selections)
+                                },
+                                onReject: {
+                                    onRejectQuestion(record, record.question)
+                                }
+                            )
+                        }
                     case .inlineError(let text):
                         InlineErrorLine(text: text)
                     case .subagentRef(let id, let label):
@@ -894,13 +936,11 @@ private struct SubagentActivityRow: View {
             .padding(.trailing, 10)
             .padding(.vertical, 6)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous)
-                    .fill(hovering ? Theme.controlHover.opacity(0.55) : Theme.controlHover.opacity(0.3))
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous)
-                    .stroke(Theme.border.opacity(0.5), lineWidth: 1)
+            .background {
+                if hovering && InlineRecordRowPresentation.highlightsOnHover {
+                    RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous)
+                        .fill(Theme.controlHover.opacity(InlineRecordRowPresentation.hoverBackgroundOpacity))
+                }
             }
             .contentShape(Rectangle())
         }
@@ -1001,13 +1041,13 @@ private struct ThinkingIndicatorBubble: View {
 /// Claude（requestID 为空）：`-p` 非交互无法回灌进程，提交作为**下一条消息**发出（会话续接）。
 private struct AskUserQuestionCard: View {
     let question: AskUserQuestion
-    let onAnswer: (AskUserQuestion, [[String]]) -> Void
-    var onReject: (AskUserQuestion) -> Void = { _ in }
+    let onAnswer: ([[String]]) -> Void
+    var onReject: () -> Void = {}
     @State private var selections: [String: Set<String>] = [:] // 问题 id → 已选 label 集合
-    @State private var answered = false
+    @State private var submitting = false
 
-    /// opencode 提问会阻塞等待回答（有 requestID）；Claude 不阻塞、走追加消息。
-    private var waitsForReply: Bool { question.requestID != nil }
+    /// 会阻塞等待回答：opencode（requestID）或 Claude 经 MCP ask_user（mcpRequestID）。其余（Claude 追加消息）为 false。
+    private var waitsForReply: Bool { question.requestID != nil || question.mcpRequestID != nil }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1030,7 +1070,6 @@ private struct AskUserQuestionCard: View {
             RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous)
                 .stroke(Theme.accent.opacity(0.35), lineWidth: 1)
         }
-        .opacity(answered ? 0.72 : 1)
     }
 
     private var header: some View {
@@ -1040,11 +1079,6 @@ private struct AskUserQuestionCard: View {
             Text("需要你的选择")
                 .appFont(relative: -1, weight: .semibold)
             Spacer(minLength: 8)
-            if answered {
-                Label("已回答", systemImage: "checkmark.circle.fill")
-                    .appFont(relative: -2, weight: .medium)
-                    .foregroundStyle(.green)
-            }
         }
     }
 
@@ -1105,7 +1139,7 @@ private struct AskUserQuestionCard: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(answered)
+        .disabled(submitting)
     }
 
     private var submitRow: some View {
@@ -1119,11 +1153,11 @@ private struct AskUserQuestionCard: View {
                     .background(Theme.controlHover.opacity(0.5), in: Capsule())
             }
             .buttonStyle(.plain)
-            .disabled(answered)
+            .disabled(submitting)
             .help(waitsForReply ? "拒绝该提问（agent 继续）" : "跳过，不回复")
             Spacer(minLength: 0)
             Button(action: submit) {
-                Text(answered ? "已提交" : "提交")
+                Text(submitting ? "提交中" : "提交")
                     .appFont(relative: -1, weight: .semibold)
                     .foregroundStyle(.white)
                     .padding(.horizontal, 16)
@@ -1142,7 +1176,7 @@ private struct AskUserQuestionCard: View {
     }
 
     private var canSubmit: Bool {
-        !answered && question.questions.allSatisfy { !(selections[$0.id]?.isEmpty ?? true) }
+        !submitting && question.questions.allSatisfy { !(selections[$0.id]?.isEmpty ?? true) }
     }
 
     private func toggle(item: AskUserQuestion.Item, option: AskUserQuestion.Option) {
@@ -1157,20 +1191,110 @@ private struct AskUserQuestionCard: View {
 
     private func submit() {
         guard canSubmit else { return }
-        onAnswer(question, orderedSelections())
-        answered = true
+        submitting = true
+        onAnswer(orderedSelections())
     }
 
     private func skip() {
-        guard !answered else { return }
-        onReject(question)
-        answered = true
+        guard !submitting else { return }
+        submitting = true
+        onReject()
     }
 
     /// 每题按选项原始顺序导出选中的 label 数组（opencode reply / Claude 文案共用）。
     private func orderedSelections() -> [[String]] {
         question.questions.map { item in
             item.options.map(\.label).filter { selections[item.id]?.contains($0) == true }
+        }
+    }
+}
+
+/// 提问工具在 assistant 时间线中的两种形态：待回答显示卡片，完成后原位折叠成「询问」工具记录。
+private struct QuestionToolTimelineBlock: View {
+    let record: QuestionToolRecord
+    let onAnswer: ([[String]]) -> Void
+    let onReject: () -> Void
+
+    @ViewBuilder
+    var body: some View {
+        if record.isPending {
+            AskUserQuestionCard(
+                question: record.question,
+                onAnswer: onAnswer,
+                onReject: onReject
+            )
+        } else {
+            ResolvedQuestionToolRow(record: record)
+        }
+    }
+}
+
+private struct ResolvedQuestionToolRow: View {
+    let record: QuestionToolRecord
+    @State private var expanded = false
+    @State private var hovering = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Button {
+                withAnimation(.easeOut(duration: 0.16)) {
+                    expanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: "questionmark.bubble")
+                        .appFont(relative: -2, weight: .semibold)
+                        .foregroundStyle(Theme.accent.opacity(0.82))
+                    Text(QuestionToolPresentation.title)
+                        .appFont(relative: -1, weight: .semibold)
+                        .foregroundStyle(.secondary)
+                    Text(summary)
+                        .appFont(relative: -2)
+                        .foregroundStyle(.tertiary)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right")
+                        .appFont(relative: -3, weight: .semibold)
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                        .foregroundStyle(.tertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(expanded ? "收起询问详情" : "展开询问详情")
+
+            if expanded {
+                VStack(alignment: .leading, spacing: 5) {
+                    ForEach(Array(record.detailLines.enumerated()), id: \.offset) { _, line in
+                        Text(line)
+                            .appFont(relative: -2)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                }
+                .padding(.leading, 21)
+                .transition(.opacity)
+            }
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            if hovering && InlineRecordRowPresentation.highlightsOnHover {
+                RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous)
+                    .fill(Theme.controlHover.opacity(InlineRecordRowPresentation.hoverBackgroundOpacity))
+            }
+        }
+        .onHover { hovering = $0 }
+    }
+
+    private var summary: String {
+        switch record.resolution {
+        case .pending:
+            return ""
+        case .answered:
+            return QuestionToolPresentation.answeredSummary
+        case .skipped:
+            return QuestionToolPresentation.skippedSummary
         }
     }
 }

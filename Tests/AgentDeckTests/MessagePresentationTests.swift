@@ -173,6 +173,30 @@ final class MessagePresentationTests: XCTestCase {
         ])
     }
 
+    func testAssistantTimelineKeepsQuestionAtOriginalPosition() {
+        let questionID = UUID()
+        let text = "先检查测试。"
+            + ToolActivity.marker(QuestionMarker.encode(id: questionID))
+            + "收到选择后继续。"
+
+        XCTAssertEqual(MessagePresentation.assistantTimelineBlocks(in: text), [
+            .init(block: .text("先检查测试。"), count: 1),
+            .init(block: .questionRef(id: questionID), count: 1),
+            .init(block: .text("收到选择后继续。"), count: 1)
+        ])
+    }
+
+    func testQuestionToolPresentationUsesLocalizedTitle() {
+        XCTAssertEqual(QuestionToolPresentation.title, "询问")
+        XCTAssertEqual(QuestionToolPresentation.answeredSummary, "已回答")
+    }
+
+    func testInlineRecordRowsUseHoverOnlyChrome() {
+        XCTAssertFalse(InlineRecordRowPresentation.showsRestingBackground)
+        XCTAssertFalse(InlineRecordRowPresentation.showsBorder)
+        XCTAssertTrue(InlineRecordRowPresentation.highlightsOnHover)
+    }
+
     func testThinkingBlocksDoNotExposeIndividualCollapse() {
         XCTAssertFalse(ThinkingBlockPresentation.allowsIndividualCollapse)
         XCTAssertTrue(ThinkingBlockPresentation.alwaysShowsContent)

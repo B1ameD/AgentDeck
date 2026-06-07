@@ -218,6 +218,43 @@ public final class AgentSession: Identifiable {
         self.lastTurnDiffSummary = messages
             .last(where: { $0.kind == .changeReview && $0.turnDiffSummary != nil })?
             .turnDiffSummary
+        // Claude：启动内置 MCP 服务并注册「展示提问卡片」处理器，让 ask_user 工具能把提问投递到本会话。
+        if agent.kind == .claudeCode {
+            AskUserMCPServer.shared.start()
+            let sessionKey = id.uuidString
+            AskUserBroker.shared.register(sessionID: sessionKey) { [weak self] question in
+                guard let self else { return false }
+                self.appendMCPQuestion(question)
+                return true
+            }
+        }
+    }
+
+    /// MCP `ask_user` 工具触发：把提问插入当前 assistant 时间线，而不是追加到整个对话末尾。
+    /// 后续流式文本会继续写在标记之后，因此卡片始终停留在实际调用发生的位置。
+    private func appendMCPQuestion(_ question: AskUserQuestion) {
+        let activeID = activeRunAssistantIDs.last
+        var assistantIndex = activeID.flatMap { id in
+            messages.firstIndex { $0.id == id }
+        }
+        appendQuestionTool(question, assistantIndex: &assistantIndex)
+        onPersist?()
+    }
+
+    /// 本会话 Claude 的 MCP ask_user 端点（服务器就绪才返回；否则 nil → 不注入，回退内置工具/追加消息）。
+    private func claudeMCPEndpoint() -> String? {
+        guard agent.kind == .claudeCode, AskUserMCPServer.injectionEnabled else { return nil }
+        return AskUserMCPServer.shared.endpointURL(forSession: id.uuidString)
+    }
+
+    /// 运行环境：Claude + MCP 就绪时放宽工具调用超时（用户作答可能较久），其余照旧。
+    private func effectiveEnvironment() -> [String: String] {
+        var environment = agent.runtimeEnvironment()
+        if agent.kind == .claudeCode, AskUserMCPServer.shared.port != nil {
+            environment["MCP_TOOL_TIMEOUT"] = "600000" // 10 分钟：阻塞等用户作答
+            environment["MCP_TIMEOUT"] = "30000"
+        }
+        return environment
     }
 
     public var isRunning: Bool { status == .running }
@@ -393,7 +430,8 @@ public final class AgentSession: Identifiable {
             sessionID: id.uuidString,
             externalSessionID: externalSessionID,
             conversationTitle: title,
-            resumeSessionID: resumeSessionID
+            resumeSessionID: resumeSessionID,
+            mcpAskEndpoint: claudeMCPEndpoint()
         )
 
         // opencode：构造流式事件源（注入了 streamer 时）。建立失败会在 consume 内回退非流式并告警。
@@ -440,7 +478,8 @@ public final class AgentSession: Identifiable {
                 sessionID: id.uuidString,
                 externalSessionID: nil,
                 conversationTitle: title,
-                resumeSessionID: resumeSessionID
+                resumeSessionID: resumeSessionID,
+                mcpAskEndpoint: claudeMCPEndpoint()
             )
             _ = await run(fallbackInvocation, suppressResumeFailureError: false)
         }
@@ -588,7 +627,7 @@ public final class AgentSession: Identifiable {
             runner.stream(
                 command: agent.command,
                 args: invocation.arguments,
-                environment: agent.runtimeEnvironment(),
+                environment: effectiveEnvironment(),
                 workingDirectory: workingDirectory,
                 stdin: invocation.stdin,
                 stopSignal: agent.stopSignal
@@ -715,41 +754,56 @@ public final class AgentSession: Identifiable {
         if object["done"] as? Bool == true {
             let result = object["result"] as? String
             let isError = (object["isError"] as? Bool) == true
+            // 已存在该任务（Claude 先发派发态、或 opencode 重复完成快照）：仅回填结果，避免重复行。
             for index in messages.indices {
                 if let taskIndex = messages[index].subagentTasks.firstIndex(where: { $0.id == id }) {
                     messages[index].subagentTasks[taskIndex].result = result
                     messages[index].subagentTasks[taskIndex].isError = isError
-                    break
+                    return
                 }
             }
+            // 找不到既有任务（opencode 只在完成时一次性给出整条 part）：创建完整任务 + 标记，使该行可点击。
+            producedMessage = true
+            appendSubagentTask(
+                SubagentTask(
+                    id: id,
+                    agentType: (object["agentType"] as? String) ?? "",
+                    taskDescription: (object["description"] as? String) ?? "",
+                    prompt: (object["prompt"] as? String) ?? "",
+                    result: result,
+                    isError: isError
+                ),
+                assistantIndex: &assistantIndex
+            )
             return
         }
 
         producedMessage = true
-        let task = SubagentTask(
-            id: id,
-            agentType: (object["agentType"] as? String) ?? "",
-            taskDescription: (object["description"] as? String) ?? "",
-            prompt: (object["prompt"] as? String) ?? ""
+        appendSubagentTask(
+            SubagentTask(
+                id: id,
+                agentType: (object["agentType"] as? String) ?? "",
+                taskDescription: (object["description"] as? String) ?? "",
+                prompt: (object["prompt"] as? String) ?? ""
+            ),
+            assistantIndex: &assistantIndex
         )
-        appendAssistantToolCall(SubagentMarker.encode(id: id, label: task.rowLabel), assistantIndex: &assistantIndex)
+    }
+
+    /// 插入「委派任务」内联标记并把任务挂到当前 assistant 消息（派发态与完成态 upsert 共用）。
+    private func appendSubagentTask(_ task: SubagentTask, assistantIndex: inout Int?) {
+        appendAssistantToolCall(SubagentMarker.encode(id: task.id, label: task.rowLabel), assistantIndex: &assistantIndex)
         if let index = assistantIndex {
             messages[index].subagentTasks.append(task)
         }
     }
 
-    /// AskUserQuestion：把解析出的问题作为独立卡片消息追加，并结束当前 assistant 气泡（问题之后的输出另起一条）。
-    /// 有结构化选项 → 渲染可点选卡片；无选项（部分 opencode 提问）→ 退化为一条提示，请用户直接在下方回复。
+    /// AskUserQuestion：把结构化问题插入当前 assistant 的有序内容流。
+    /// 有结构化选项 → 原位渲染卡片；无选项（部分 opencode 提问）→ 退化为普通提示。
     private func appendQuestion(_ inputJSON: String, assistantIndex: inout Int?, producedMessage: inout Bool) {
         producedMessage = true
-        assistantIndex = nil
         if let question = AskUserQuestionParser.parse(inputJSON: inputJSON) {
-            messages.append(ChatMessage(
-                role: .system,
-                text: question.plainSummary,
-                kind: .question,
-                question: question
-            ))
+            appendQuestionTool(question, assistantIndex: &assistantIndex)
             return
         }
         let detail = AskUserQuestionParser.fallbackPrompt(inputJSON: inputJSON)
@@ -760,9 +814,31 @@ public final class AgentSession: Identifiable {
         ))
     }
 
-    /// 回答提问卡片。opencode（有 requestID）→ 经 reply API 回传给运行中的 agent，原地继续；
-    /// Claude（无 requestID）→ 把选择拼成下一条消息发出（续接会话）。
+    /// 回答时间线中的提问工具记录：先原位更新并落盘，再把答案回传给对应 agent。
+    public func answerQuestion(
+        recordID: UUID,
+        question: AskUserQuestion,
+        selections: [[String]]
+    ) async {
+        markQuestion(recordID: recordID, resolution: .answered(selections))
+        await deliverQuestionAnswer(question, selections: selections)
+    }
+
+    /// 兼容旧版独立 question 消息；新界面调用带 recordID 的重载。
     public func answerQuestion(_ question: AskUserQuestion, selections: [[String]]) async {
+        if let recordID = pendingQuestionRecordID(matching: question) {
+            await answerQuestion(recordID: recordID, question: question, selections: selections)
+            return
+        }
+        await deliverQuestionAnswer(question, selections: selections)
+    }
+
+    private func deliverQuestionAnswer(_ question: AskUserQuestion, selections: [[String]]) async {
+        // Claude MCP 阻塞提问：唤醒挂起的 ask_user 工具调用，Claude 在同一进程原地继续。
+        if let mcpID = question.mcpRequestID {
+            AskUserBroker.shared.resolve(mcpID, .answered(Self.composedAnswerText(question, selections: selections)))
+            return
+        }
         if let requestID = question.requestID, agent.kind == .openCode, let streamer = openCodeStreamer {
             await streamer.replyToQuestion(
                 executable: agent.command, environment: agent.runtimeEnvironment(),
@@ -773,13 +849,77 @@ public final class AgentSession: Identifiable {
         await send(Self.composedAnswerText(question, selections: selections))
     }
 
-    /// 跳过提问。opencode → reject API（解除阻塞、agent 继续）；Claude → 不发送（用户可自行输入）。
+    /// 跳过时间线中的提问工具记录：先记为已跳过并落盘，再解除 agent 的等待。
+    public func rejectQuestion(recordID: UUID, question: AskUserQuestion) async {
+        markQuestion(recordID: recordID, resolution: .skipped)
+        await deliverQuestionRejection(question)
+    }
+
+    /// 兼容旧版独立 question 消息；新界面调用带 recordID 的重载。
     public func rejectQuestion(_ question: AskUserQuestion) async {
+        if let recordID = pendingQuestionRecordID(matching: question) {
+            await rejectQuestion(recordID: recordID, question: question)
+            return
+        }
+        await deliverQuestionRejection(question)
+    }
+
+    private func deliverQuestionRejection(_ question: AskUserQuestion) async {
+        if let mcpID = question.mcpRequestID {
+            AskUserBroker.shared.resolve(mcpID, .rejected)
+            return
+        }
         guard let requestID = question.requestID, agent.kind == .openCode, let streamer = openCodeStreamer else { return }
         await streamer.rejectQuestion(
             executable: agent.command, environment: agent.runtimeEnvironment(),
             workingDirectory: workingDirectory, requestID: requestID
         )
+    }
+
+    private func appendQuestionTool(_ question: AskUserQuestion, assistantIndex: inout Int?) {
+        let record = QuestionToolRecord(question: question)
+        appendAssistantToolCall(QuestionMarker.encode(id: record.id), assistantIndex: &assistantIndex)
+        guard let index = assistantIndex else { return }
+        messages[index].questionTools.append(record)
+    }
+
+    private func markQuestion(recordID: UUID, resolution: QuestionToolRecord.Resolution) {
+        for messageIndex in messages.indices {
+            guard let recordIndex = messages[messageIndex].questionTools.firstIndex(where: { $0.id == recordID }) else {
+                continue
+            }
+            switch resolution {
+            case .pending:
+                break
+            case .answered(let selections):
+                messages[messageIndex].questionTools[recordIndex].answer(selections)
+            case .skipped:
+                messages[messageIndex].questionTools[recordIndex].skip()
+            }
+            onPersist?()
+            return
+        }
+    }
+
+    private func pendingQuestionRecordID(matching question: AskUserQuestion) -> UUID? {
+        for message in messages.reversed() {
+            if let record = message.questionTools.last(where: {
+                $0.isPending && questionsReferToSameRequest($0.question, question)
+            }) {
+                return record.id
+            }
+        }
+        return nil
+    }
+
+    private func questionsReferToSameRequest(_ lhs: AskUserQuestion, _ rhs: AskUserQuestion) -> Bool {
+        if let left = lhs.mcpRequestID, let right = rhs.mcpRequestID {
+            return left == right
+        }
+        if let left = lhs.requestID, let right = rhs.requestID {
+            return left == right
+        }
+        return lhs == rhs
     }
 
     /// 把各题选择拼成发给 Claude 的回答文本（保留题序）。

@@ -26,6 +26,8 @@ enum AssistantContentBlock: Equatable {
     case inlineError(String)
     /// 内联工具活动（如「读取 foo.swift」「运行 ls」）。按时间顺序穿插在文本块之间。
     case toolCall(String)
+    /// 提问工具记录：id 对应 ChatMessage.questionTools 中的记录。
+    case questionRef(id: UUID)
     /// 委派任务行：携带子任务 id（链接到 message.subagentTasks）与展示标签。点击可在右侧栏看明细。
     case subagentRef(id: String, label: String)
 }
@@ -60,6 +62,8 @@ enum MessagePresentation {
                         let cleaned = clean(summary)
                         if cleaned.isEmpty {
                             break
+                        } else if let questionID = QuestionMarker.decode(cleaned) {
+                            blocks.append(.questionRef(id: questionID))
                         } else if let sub = SubagentMarker.decode(cleaned) {
                             blocks.append(.subagentRef(id: sub.id, label: sub.label))
                         } else {
@@ -109,6 +113,8 @@ enum MessagePresentation {
                     text
                 case .toolCall(let text):
                     "› \(text)"
+                case .questionRef:
+                    "› 询问"
                 case .subagentRef(_, let label):
                     "› 委派任务：\(label)"
                 case .thinking(let text):
@@ -340,7 +346,7 @@ enum RunProcessDetailPresentation {
         switch block {
         case .thinking:
             return false
-        case .text, .inlineError, .toolCall, .subagentRef:
+        case .text, .inlineError, .toolCall, .questionRef, .subagentRef:
             return true
         }
     }
@@ -357,6 +363,19 @@ enum RunProcessDetailPresentation {
 enum ThinkingBlockPresentation {
     static let allowsIndividualCollapse = false
     static let alwaysShowsContent = true
+}
+
+enum QuestionToolPresentation {
+    static let title = "询问"
+    static let answeredSummary = "已回答"
+    static let skippedSummary = "已跳过"
+}
+
+enum InlineRecordRowPresentation {
+    static let showsRestingBackground = false
+    static let showsBorder = false
+    static let highlightsOnHover = true
+    static let hoverBackgroundOpacity = 0.42
 }
 
 enum RunCompletionTimePresentation {

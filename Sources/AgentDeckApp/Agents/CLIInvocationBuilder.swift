@@ -26,13 +26,14 @@ public enum CLIInvocationBuilder {
         sessionID: String? = nil,
         externalSessionID: String? = nil,
         conversationTitle: String? = nil,
-        resumeSessionID: String? = nil
+        resumeSessionID: String? = nil,
+        mcpAskEndpoint: String? = nil
     ) -> CLIInvocation {
         switch agent.kind {
         case .claudeCode:
             return claude(
                 agent, prompt, model, reasoningEffort, interactionMode, command,
-                attachments, sessionID, externalSessionID, resumeSessionID
+                attachments, sessionID, externalSessionID, resumeSessionID, mcpAskEndpoint
             )
         case .openCode:
             return opencode(agent, prompt, model, reasoningEffort, command, attachments, externalSessionID, conversationTitle)
@@ -57,9 +58,19 @@ public enum CLIInvocationBuilder {
         _ attachments: [URL],
         _ sessionID: String?,
         _ externalSessionID: String?,
-        _ resumeSessionID: String?
+        _ resumeSessionID: String?,
+        _ mcpAskEndpoint: String?
     ) -> CLIInvocation {
         var args = agent.args // 通常是 ["-p"]
+
+        // 内置 MCP 提问工具：暴露一个**阻塞**的 ask_user，并禁用内置 AskUserQuestion，
+        // 让 Claude 需要提问时调用它（在 AgentDeck 里弹卡片、等用户作答、原地继续），而非自行假设答案。
+        if let endpoint = mcpAskEndpoint, let config = mcpConfigJSON(endpoint: endpoint) {
+            args += ["--mcp-config", config]
+            args += ["--disallowedTools", "AskUserQuestion"]
+            args += ["--append-system-prompt",
+                     "When you need the user to choose between options or to clarify intent, call the mcp__agentdeck__ask_user tool and wait for the answer — do not guess, and do not use AskUserQuestion."]
+        }
 
         if let model = normalizedModel(model) {
             args += ["--model", model]
@@ -223,6 +234,13 @@ public enum CLIInvocationBuilder {
         guard !attachments.isEmpty else { return prompt }
         let list = attachments.map { "@\($0.path)" }.joined(separator: "\n")
         return prompt + "\n\n附件：\n" + list
+    }
+
+    /// `--mcp-config` 的内联 JSON：注册名为 agentdeck 的 http MCP 服务（指向进程内 AskUserMCPServer）。
+    private static func mcpConfigJSON(endpoint: String) -> String? {
+        let config: [String: Any] = ["mcpServers": ["agentdeck": ["type": "http", "url": endpoint]]]
+        guard let data = try? JSONSerialization.data(withJSONObject: config) else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 
     private static func normalizedModel(_ model: String) -> String? {

@@ -38,9 +38,19 @@ public struct AskUserQuestion: Equatable, Sendable, Codable {
     /// opencode `question.asked` 的回传句柄：非空 → 答案经 POST /question/{requestID}/reply 回传给运行中的 agent。
     /// Claude 为 nil（答案作为下一条消息追加）。
     public var requestID: String?
+    /// 仅运行时：Claude 经 AgentDeck 内置 MCP `ask_user` 工具阻塞提问时的回传句柄（不持久化）。
+    /// 非空 → 答案经 AskUserBroker 唤醒挂起的工具调用，Claude 原地继续。
+    public var mcpRequestID: String? = nil
+
     public init(questions: [Item], requestID: String? = nil) {
         self.questions = questions
         self.requestID = requestID
+    }
+
+    // mcpRequestID 是运行时句柄，不入 Codable（重载历史时不应残留）。
+    private enum CodingKeys: String, CodingKey {
+        case questions
+        case requestID
     }
 
     /// 持久化 / 历史 / 复制用的纯文本回退（卡片不可用场景）。
@@ -49,6 +59,68 @@ public struct AskUserQuestion: Equatable, Sendable, Codable {
             "❓ \(item.title)\n选项：\(item.options.map(\.label).joined(separator: " / "))"
         }
         return (["需要你的选择："] + lines).joined(separator: "\n")
+    }
+}
+
+/// 一次可持久化的提问工具记录。运行时卡片与回答后的折叠详情共用同一条记录，
+/// 因此关闭并重开会话后不会重新变成可作答状态。
+public struct QuestionToolRecord: Equatable, Sendable, Codable, Identifiable {
+    public enum Resolution: Equatable, Sendable, Codable {
+        case pending
+        case answered([[String]])
+        case skipped
+    }
+
+    public let id: UUID
+    public var question: AskUserQuestion
+    public private(set) var resolution: Resolution
+
+    public init(
+        id: UUID = UUID(),
+        question: AskUserQuestion,
+        resolution: Resolution = .pending
+    ) {
+        self.id = id
+        self.question = question
+        self.resolution = resolution
+    }
+
+    public var isPending: Bool {
+        resolution == .pending
+    }
+
+    public mutating func answer(_ selections: [[String]]) {
+        resolution = .answered(selections)
+    }
+
+    public mutating func skip() {
+        resolution = .skipped
+    }
+
+    public var detailLines: [String] {
+        switch resolution {
+        case .pending:
+            return question.questions.flatMap { item in
+                [
+                    "Question：\(item.title)",
+                    "Choose：等待回答"
+                ]
+            }
+        case .answered(let selections):
+            return zip(question.questions, selections).flatMap { item, labels in
+                [
+                    "Question：\(item.title)",
+                    "Choose：\(labels.joined(separator: " / "))"
+                ]
+            }
+        case .skipped:
+            return question.questions.flatMap { item in
+                [
+                    "Question：\(item.title)",
+                    "Choose：已跳过"
+                ]
+            }
+        }
     }
 }
 
