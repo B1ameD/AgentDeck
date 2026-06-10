@@ -7,6 +7,13 @@ private struct ChatBottomVisibleKey: PreferenceKey {
     static func reduce(value: inout Bool, nextValue: () -> Bool) { value = nextValue() }
 }
 
+/// 窗口顶部哨兵在视口坐标系里的 maxY（负值=在视口上方多远）。
+/// 用连续数值而非布尔：滚动中每帧变化都触发 onPreferenceChange，自动释放才能连续推进。
+private struct ChatTopDistanceKey: PreferenceKey {
+    static let defaultValue: CGFloat = -.greatestFiniteMagnitude
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
 struct ChatPaneView: View {
     @Bindable var session: AgentSession
     var workspace: WorkspaceController?
@@ -22,9 +29,11 @@ struct ChatPaneView: View {
     /// 用户当前是否处于（接近）聊天底部。只有「本就在底部」时，侧栏开合才把视图保持贴底；
     /// 若在上翻看历史，则不打扰其位置。避免之前「一开侧栏就强行滚到底」的突兀观感。
     @State private var atBottom = true
-    /// 长转录尾部窗口：只渲染最近 N 条，更早折叠在「显示更早」按钮后（#2 首帧性能——
-    /// bottom 锚定的 LazyVStack 会测量全部气泡高度，每条都是一次完整 TextKit 布局）。
+    /// 长转录尾部窗口：只渲染最近 N 条（#2 首帧性能——否则要测量全部气泡高度，
+    /// 每条都是一次完整 TextKit 布局）。上滑接近顶部时自动渐进释放更早消息。
     @State private var transcriptLimit = TranscriptWindow.defaultLimit
+    /// 自动释放冷却：让上一批的 TextKit 布局先落定，避免连续触发把滚动卡死。
+    @State private var lastAutoRelease = Date.distantPast
 
     /// 聊天列表底部锚点 id（滚动到最新消息用）。
     private static let bottomAnchorID = "agentdeck.chat.bottomAnchor"
@@ -39,17 +48,14 @@ struct ChatPaneView: View {
             // 迟到会顶得内容跳动(「浮现移动」),而窗口化后急切渲染的成本是有界的。
             VStack(alignment: .leading, spacing: 10) {
                 if transcriptSlice.hiddenCount > 0 {
-                    Button("显示更早的 \(transcriptSlice.hiddenCount) 条消息") {
-                        transcriptLimit = TranscriptWindow.expandedLimit(
-                            current: transcriptLimit,
-                            totalCount: session.messages.count
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .appFont(relative: -2)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 6)
+                    // 顶部哨兵：上报与视口的距离，接近时自动释放下一批更早消息（无按钮，渐进展开）。
+                    Color.clear.frame(height: 1)
+                        .background(GeometryReader { top in
+                            Color.clear.preference(
+                                key: ChatTopDistanceKey.self,
+                                value: top.frame(in: .named(Self.scrollSpace)).maxY
+                            )
+                        })
                 }
                 ForEach(visibleMessages) { message in
                     MessageBubble(
@@ -119,6 +125,12 @@ struct ChatPaneView: View {
         // 切换会话时收回尾部窗口（@State 不随上面的 .id 重建）。
         .onChange(of: session.id) { _, _ in transcriptLimit = TranscriptWindow.defaultLimit }
         .onPreferenceChange(ChatBottomVisibleKey.self) { atBottom = $0 }
+        // 上滑接近窗口顶部 → 自动放出下一批更早消息。依赖 defaultScrollAnchor(.bottom)
+        // 在内容顶部增长时保持「距底偏移」不变，故释放不引起可视内容跳动。
+        .onPreferenceChange(ChatTopDistanceKey.self) { distance in
+            guard distance > -TranscriptWindow.releaseDistance else { return }
+            releaseOlderMessagesIfNeeded()
+        }
         // 侧栏开/合会改列宽并重排聊天：仅当本就贴底时，逐帧把视图保持贴底（无动画，故不会上下乱滚）。
         .onChange(of: sidebarVisible) { _, _ in keepPinnedToBottomIfNeeded(proxy) }
         // 窗口缩放（尤其改高度）同理：视口变小时若不重锚，底部最新消息会被推出可视区（内容“不可见”）。
@@ -171,6 +183,18 @@ struct ChatPaneView: View {
 
     private var visibleMessages: ArraySlice<ChatMessage> {
         session.messages[transcriptSlice.visibleStart...]
+    }
+
+    /// 放出下一批更早消息（带 150ms 冷却：等上一批 TextKit 布局落定再继续，保持滚动顺滑）。
+    private func releaseOlderMessagesIfNeeded() {
+        guard transcriptSlice.hiddenCount > 0 else { return }
+        let now = Date()
+        guard now.timeIntervalSince(lastAutoRelease) > 0.15 else { return }
+        lastAutoRelease = now
+        transcriptLimit = TranscriptWindow.scrollExpandedLimit(
+            current: transcriptLimit,
+            totalCount: session.messages.count
+        )
     }
 
     /// 仅当用户本就贴底时，在侧栏宽度动画(≈0.28s)期间逐帧把视图保持在底部。

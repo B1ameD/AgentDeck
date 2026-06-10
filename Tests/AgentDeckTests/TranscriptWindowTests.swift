@@ -21,9 +21,9 @@ final class TranscriptWindowTests: XCTestCase {
         XCTAssertEqual(after.hiddenCount, before.hiddenCount + 1)
     }
 
-    func testExpandReleasesOnePageAndCapsAtTotal() {
-        XCTAssertEqual(TranscriptWindow.expandedLimit(current: 40, totalCount: 389), 120)
-        XCTAssertEqual(TranscriptWindow.expandedLimit(current: 360, totalCount: 389), 389, "封顶全量")
+    func testScrollExpandReleasesOneBatchAndCapsAtTotal() {
+        XCTAssertEqual(TranscriptWindow.scrollExpandedLimit(current: 40, totalCount: 389), 50)
+        XCTAssertEqual(TranscriptWindow.scrollExpandedLimit(current: 385, totalCount: 389), 389, "封顶全量")
         let (hidden, _) = TranscriptWindow.slice(totalCount: 389, limit: 389)
         XCTAssertEqual(hidden, 0)
     }
@@ -31,6 +31,6 @@ final class TranscriptWindowTests: XCTestCase {
     func testDegenerateLimits() {
         XCTAssertEqual(TranscriptWindow.slice(totalCount: 10, limit: 0).hiddenCount, 9, "limit 夹紧到 ≥1")
         XCTAssertEqual(TranscriptWindow.slice(totalCount: 0, limit: 40).hiddenCount, 0)
-        XCTAssertEqual(TranscriptWindow.expandedLimit(current: 0, totalCount: 5), 5)
+        XCTAssertEqual(TranscriptWindow.scrollExpandedLimit(current: 0, totalCount: 5), 5)
     }
 }

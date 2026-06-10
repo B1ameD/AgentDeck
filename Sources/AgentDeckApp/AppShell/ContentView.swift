@@ -99,7 +99,42 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 16) {
             railBrand
 
+            // 中段(Agents+Recent)可滚动:窗口压矮/标签多时挤压的是这里,
+            // 底部的 工作目录/Add Agent/历史检索/设置 始终可见(用户反馈:矮窗口按钮不可见)。
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    agentsSection
+                    recentSection
+                }
+            }
+            .scrollIndicators(.hidden)
+            .frame(maxHeight: .infinity)
+
             VStack(alignment: .leading, spacing: 8) {
+                workspaceRow
+                addAgentMenu
+                RailActionButton(title: "历史检索", systemImage: "magnifyingglass") {
+                    showingHistory = true
+                }
+                RailActionButton(title: "设置", systemImage: "gearshape") {
+                    openWindow(id: AgentDeckApp.settingsWindowID)
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 16)
+        .frame(width: 238)
+        .background(Theme.railSurface, in: RoundedRectangle(cornerRadius: Theme.Radius.xl, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: Theme.Radius.xl, style: .continuous)
+                .stroke(Theme.border.opacity(0.58), lineWidth: 1)
+        }
+        .shadow(color: Theme.railShadowColor, radius: 22, x: 0, y: 12)
+        .shadow(color: Theme.shadowColor.opacity(0.45), radius: 5, x: 0, y: 1)
+    }
+
+    private var agentsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
                 RailSectionLabel("Agents")
                 ForEach(workspace.orderedSessions) { session in
                     AgentTabRow(
@@ -124,9 +159,11 @@ struct ContentView: View {
                         .padding(.horizontal, 10)
                         .padding(.vertical, 8)
                 }
-            }
+        }
+    }
 
-            VStack(alignment: .leading, spacing: 8) {
+    private var recentSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 4) {
                     RailSectionLabel("Recent")
                     Spacer()
@@ -154,31 +191,7 @@ struct ContentView: View {
                         onDelete: { workspace.deleteConversation(id: convo.id) }
                     )
                 }
-            }
-
-            Spacer()
-
-            VStack(alignment: .leading, spacing: 8) {
-                workspaceRow
-                addAgentMenu
-                RailActionButton(title: "历史检索", systemImage: "magnifyingglass") {
-                    showingHistory = true
-                }
-                RailActionButton(title: "设置", systemImage: "gearshape") {
-                    openWindow(id: AgentDeckApp.settingsWindowID)
-                }
-            }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 16)
-        .frame(width: 238)
-        .background(Theme.railSurface, in: RoundedRectangle(cornerRadius: Theme.Radius.xl, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: Theme.Radius.xl, style: .continuous)
-                .stroke(Theme.border.opacity(0.58), lineWidth: 1)
-        }
-        .shadow(color: Theme.railShadowColor, radius: 22, x: 0, y: 12)
-        .shadow(color: Theme.shadowColor.opacity(0.45), radius: 5, x: 0, y: 1)
     }
 
     private var railBrand: some View {
@@ -390,7 +403,8 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 // 为右栏预留的空间**瞬变**（开=右栏宽、合=0），故中间栏开/合都立刻定到最终宽度、不等滑动。
                 // 拖拽分隔条期间用冻结宽度（见 sidebarLayoutWidth），松手才重排一次。
-                .padding(.trailing, showFiles ? sidebarLayoutWidth : 0)
+                // +8：聊天区滚动条与分隔线/拖动热区之间留一条物理间隙（用户反馈两者重叠）。
+                .padding(.trailing, showFiles ? sidebarLayoutWidth + 8 : 0)
 
                 // 右栏作为覆盖层只用 offset 滑入/滑出，不参与中间栏的布局——这样关闭时中间栏不用等它滑回。
                 if sidebarRendered {
