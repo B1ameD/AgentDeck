@@ -47,10 +47,10 @@ struct BroadcastCompareView: View {
             ScrollView(.horizontal) {
                 HStack(alignment: .top, spacing: 12) {
                     ForEach(workspace.sessions) { session in
-                        if let response = BroadcastCompare.response(in: session.messages, broadcastID: id) {
+                        if let reply = BroadcastCompare.reply(in: session.messages, broadcastID: id) {
                             CompareColumn(
                                 session: session,
-                                response: response,
+                                reply: reply,
                                 onJump: {
                                     workspace.focusSession(id: session.id)
                                     dismiss()
@@ -79,7 +79,7 @@ struct BroadcastCompareView: View {
 
 private struct CompareColumn: View {
     let session: AgentSession
-    let response: String
+    let reply: BroadcastCompare.RoundReply
     let onJump: () -> Void
 
     var body: some View {
@@ -113,15 +113,29 @@ private struct CompareColumn: View {
             Divider()
 
             ScrollView {
-                if response.isEmpty {
+                if reply.text.isEmpty {
                     Text(session.status == .running ? "生成中…" : "（无输出）")
                         .appFont(relative: -1)
                         .foregroundStyle(.secondary)
                         .padding(12)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    MarkdownText(content: response, linkContext: nil)
-                        .padding(12)
+                    // 复用单聊气泡的完整渲染器:计时头、思考折叠、内联工具行与正文显示完全一致。
+                    AssistantMessageContent(
+                        text: reply.text,
+                        toolCalls: [],
+                        isStreaming: session.status == .running,
+                        runStartedAt: reply.runStartedAt,
+                        runEndedAt: reply.runEndedAt,
+                        linkContext: MessageLinkContext(
+                            workingDirectory: session.workingDirectory,
+                            fileLinks: [],
+                            openFile: { _ in },
+                            openWebURL: { url in NSWorkspace.shared.open(url) },
+                            detectFileReferences: false
+                        )
+                    )
+                    .padding(12)
                 }
             }
             .frame(maxHeight: .infinity)

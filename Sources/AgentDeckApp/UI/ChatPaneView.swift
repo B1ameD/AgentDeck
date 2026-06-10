@@ -500,7 +500,9 @@ private struct MessageBubble: View {
     }
 }
 
-private struct AssistantMessageContent: View {
+/// assistant 消息的完整呈现(计时头+思考折叠+工具行+正文)。
+/// 非 private:广播对比视图(#27)复用同一渲染器,保证与单聊气泡显示一致。
+struct AssistantMessageContent: View {
     let text: String
     let toolCalls: [String]
     let isStreaming: Bool

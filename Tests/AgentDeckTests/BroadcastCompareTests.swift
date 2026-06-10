@@ -28,31 +28,35 @@ final class BroadcastCompareTests: XCTestCase {
         )
     }
 
-    func testResponseCollectsAssistantTextUntilNextUserMessage() {
+    func testReplyCollectsAssistantTextAndTimingUntilNextUserMessage() {
+        let started = Date(timeIntervalSinceReferenceDate: 10)
+        let ended = Date(timeIntervalSinceReferenceDate: 25)
+        var first = message(.assistant, "第一段")
+        first.runStartedAt = started
+        var second = message(.assistant, "第二段")
+        second.runEndedAt = ended
         let messages = [
             message(.user, "问题", broadcastID: "b1"),
-            message(.assistant, "第一段"),
+            first,
             message(.system, "已停止。"),
-            message(.assistant, "第二段"),
+            second,
             message(.user, "下一轮普通提问"),
             message(.assistant, "不该被算进 b1")
         ]
-        XCTAssertEqual(
-            BroadcastCompare.response(in: messages, broadcastID: "b1"),
-            "第一段\n\n第二段"
-        )
+        let reply = BroadcastCompare.reply(in: messages, broadcastID: "b1")
+        XCTAssertEqual(reply?.text, "第一段\n\n第二段")
+        XCTAssertEqual(reply?.runStartedAt, started, "取首条 assistant 的开始时间")
+        XCTAssertEqual(reply?.runEndedAt, ended, "取末条 assistant 的结束时间")
     }
 
-    func testResponseDistinguishesAbsentAndPendingSessions() {
+    func testReplyDistinguishesAbsentAndPendingSessions() {
         XCTAssertNil(
-            BroadcastCompare.response(in: [message(.user, "无关")], broadcastID: "b1"),
+            BroadcastCompare.reply(in: [message(.user, "无关")], broadcastID: "b1"),
             "未参与该轮 → nil"
         )
-        XCTAssertEqual(
-            BroadcastCompare.response(in: [message(.user, "问题", broadcastID: "b1")], broadcastID: "b1"),
-            "",
-            "已参与但尚无输出 → 空串"
-        )
+        let pending = BroadcastCompare.reply(in: [message(.user, "问题", broadcastID: "b1")], broadcastID: "b1")
+        XCTAssertEqual(pending?.text, "", "已参与但尚无输出 → 空文本")
+        XCTAssertNil(pending?.runStartedAt)
     }
 
     func testBroadcastIDSurvivesCodableRoundTrip() throws {
