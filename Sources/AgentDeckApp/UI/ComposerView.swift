@@ -55,6 +55,7 @@ struct ComposerView: View {
     @State private var optimizeError: String?
     @State private var hoveringOptimize = false
     @State private var hoveringContext = false
+    @State private var showingCompare = false // 广播对比 sheet(#27)
     @AppStorage(InterfaceFont.storageKey) private var interfaceFontID = InterfaceFont.defaultID
     @AppStorage(AppFontSize.storageKey) private var appFontSize = AppFontSize.defaultValue
     @AppStorage(PromptOptimizationMode.storageKey) private var promptOptimizationModeID = PromptOptimizationMode.defaultID
@@ -269,6 +270,15 @@ struct ComposerView: View {
                     workspace.multiAgentMode.toggle()
                     focusToken += 1
                 }
+                if hasBroadcastRound {
+                    // 广播过至少一轮才显示:并排对比各 agent 对同一 prompt 的回答(#27)。
+                    ControlChip(text: "对比", hint: "并排对比最近一轮广播的各家回答", isActive: showingCompare) {
+                        showingCompare = true
+                    }
+                    .sheet(isPresented: $showingCompare) {
+                        BroadcastCompareView(workspace: workspace)
+                    }
+                }
             }
 
             Spacer()
@@ -417,6 +427,12 @@ struct ComposerView: View {
         let estimate = "≈ \(ContextEstimate.compact(tokens)) / \(ContextEstimate.compact(window))"
         guard !session.usage.isEmpty else { return estimate }
         return "\(estimate) · \(session.usage.compactSummary)"
+    }
+
+    /// 是否存在过广播轮次(打标用户消息)。消息数组为 CoW 引用,逐条只查 role+broadcastID,开销可忽略。
+    private var hasBroadcastRound: Bool {
+        guard let workspace else { return false }
+        return BroadcastCompare.latestBroadcastID(in: workspace.sessions.map(\.messages)) != nil
     }
 
     private var modeLabel: String {

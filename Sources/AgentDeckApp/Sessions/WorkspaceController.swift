@@ -502,8 +502,10 @@ public final class WorkspaceController {
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !sessions.isEmpty else { return }
 
+        // 同一轮广播共享一个 broadcastID,打在各会话的用户消息上——对比视图据此对齐各家回答(#27)。
+        let broadcastID = UUID().uuidString
         for session in sessions {
-            Task { await session.sendApproved(prompt: prompt, attachments: attachments) }
+            Task { await session.sendApproved(prompt: prompt, attachments: attachments, broadcastID: broadcastID) }
         }
     }
 }

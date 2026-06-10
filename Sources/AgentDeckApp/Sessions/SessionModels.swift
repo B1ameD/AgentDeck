@@ -35,6 +35,9 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
     /// 本轮 agent 运行起止时间。仅 assistant 输出消息使用；旧历史记录为空。
     public var runStartedAt: Date?
     public var runEndedAt: Date?
+    /// 广播轮次标记（#27 对比视图）：同一次广播在各会话的用户消息共享同一 id，
+    /// 据此把「同一问题」的各家回答对齐。仅用户消息打标；非广播消息为 nil。
+    public var broadcastID: String?
 
     public init(
         id: UUID = UUID(),
@@ -49,7 +52,8 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
         questionTools: [QuestionToolRecord] = [],
         subagentTasks: [SubagentTask] = [],
         runStartedAt: Date? = nil,
-        runEndedAt: Date? = nil
+        runEndedAt: Date? = nil,
+        broadcastID: String? = nil
     ) {
         self.id = id
         self.role = role
@@ -64,6 +68,7 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
         self.subagentTasks = subagentTasks
         self.runStartedAt = runStartedAt
         self.runEndedAt = runEndedAt
+        self.broadcastID = broadcastID
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -80,6 +85,7 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
         case subagentTasks
         case runStartedAt
         case runEndedAt
+        case broadcastID
     }
 
     public init(from decoder: Decoder) throws {
@@ -97,6 +103,7 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
         subagentTasks = try container.decodeIfPresent([SubagentTask].self, forKey: .subagentTasks) ?? []
         runStartedAt = try container.decodeIfPresent(Date.self, forKey: .runStartedAt)
         runEndedAt = try container.decodeIfPresent(Date.self, forKey: .runEndedAt)
+        broadcastID = try container.decodeIfPresent(String.self, forKey: .broadcastID)
     }
 }
 

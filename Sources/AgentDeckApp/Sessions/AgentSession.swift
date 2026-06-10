@@ -340,12 +340,17 @@ public final class AgentSession: Identifiable {
     /// 已获授权的发送：跳过逐会话权限闸门直接执行。广播授权弹窗已代表用户对**所有**目标会话的统一许可，
     /// 故对其中本无独立 pending 的会话也走这里——绝不再去设置各自的 `pendingPermission`，
     /// 从根上杜绝「后台标签弹出一个不可见的逐会话确认、导致那条广播一直发不出去」。
-    public func sendApproved(prompt: String, attachments: [URL] = [], remember: Bool = false) async {
+    public func sendApproved(
+        prompt: String,
+        attachments: [URL] = [],
+        remember: Bool = false,
+        broadcastID: String? = nil
+    ) async {
         guard status != .running else { return }
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         if remember { approvedDirectory = workingDirectory }
-        await performSend(prompt: prompt, attachments: attachments)
+        await performSend(prompt: prompt, attachments: attachments, broadcastID: broadcastID)
     }
 
     /// 触发「开新会话」（/clear）：换上同 agent/目录的新空标签，旧对话留存历史。
@@ -403,7 +408,7 @@ public final class AgentSession: Identifiable {
         }
     }
 
-    private func performSend(prompt: String, attachments: [URL]) async {
+    private func performSend(prompt: String, attachments: [URL], broadcastID: String? = nil) async {
         let continuity = claudeContinuityStrategy(for: prompt)
         let externalSessionID = agent.kind == .claudeCode
             ? continuity.externalSessionID
@@ -412,7 +417,7 @@ public final class AgentSession: Identifiable {
         let invocationPrompt = promptForInvocation(prompt, continuity: continuity)
         // 先显示用户消息 + 进入运行态（思考指示器即时出现），再捕获运行前基线快照——
         // 快照仍在 agent 真正执行之前完成，但不再让它阻塞「用户消息上屏」。
-        messages.append(ChatMessage(role: .user, text: prompt))
+        messages.append(ChatMessage(role: .user, text: prompt, broadcastID: broadcastID))
         activeRunStartedAt = Date()
         activeRunAssistantIDs = []
         status = .running
