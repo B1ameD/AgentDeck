@@ -189,7 +189,7 @@ struct SettingsWindowView: View {
                 }
                 .labelsHidden()
                 .pickerStyle(.menu)
-                .frame(width: controlWidth)
+                .frame(width: controlWidth, alignment: .trailing)
                 .onChange(of: promptOptProviderID) { _, providerID in
                     applyPromptOptimizationProvider(providerID)
                 }
@@ -274,7 +274,7 @@ struct SettingsWindowView: View {
                 }
                 .labelsHidden()
                 .pickerStyle(.menu)
-                .frame(width: controlWidth)
+                .frame(width: controlWidth, alignment: .trailing)
             }
 
             settingRow("界面字体", "菜单 / 侧栏 / 聊天等界面文字的字体。") {
@@ -287,7 +287,7 @@ struct SettingsWindowView: View {
                 }
                 .labelsHidden()
                 .pickerStyle(.segmented)
-                .frame(width: controlWidth)
+                .frame(width: controlWidth, alignment: .trailing)
             }
         }
     }
@@ -356,7 +356,7 @@ struct SettingsWindowView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
-                    .frame(width: controlWidth)
+                    .frame(width: controlWidth, alignment: .trailing)
                     .onChange(of: currentProjectID) { _, id in selectProject(id) }
                 }
                 HStack(spacing: 10) {
@@ -399,7 +399,7 @@ struct SettingsWindowView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
-                    .frame(width: controlWidth)
+                    .frame(width: controlWidth, alignment: .trailing)
                 }
             } else {
                 Text("当前没有打开的会话。").font(bodyFont).foregroundStyle(.secondary)
@@ -511,7 +511,9 @@ struct SettingsWindowView: View {
         }
         .labelsHidden()
         .pickerStyle(.menu)
-        .frame(width: width ?? controlWidth)
+        // 固定宽度槽内右对齐:下拉自身按内容收缩,不指定对齐会被居中,
+        // 各行标签长短不一时右缘参差(用户要求 Word 式「靠右对齐」)。
+        .frame(width: width ?? controlWidth, alignment: .trailing)
     }
 
     // MARK: - 工作区逻辑
