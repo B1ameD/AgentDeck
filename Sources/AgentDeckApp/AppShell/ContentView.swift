@@ -291,7 +291,8 @@ struct ContentView: View {
     }
 
     /// 右侧栏左缘的横向缩放手柄：拖动改变侧栏宽度（向左变宽），用 NSView 接管鼠标、不移动窗口。
-    /// 对齐 Codex：≈16px 透明热区（跨在分隔线两侧）、拖到小于最小宽直接关闭、双击复位默认宽度。
+    /// 热区整体放在分隔线**右侧**（侧栏一侧）：聊天区的纵向滚动条贴在分隔线左缘，
+    /// 热区跨到左侧会盖住滚动条（用户反馈）。拖到小于最小宽直接关闭、双击复位默认宽度。
     private var sidebarResizeHandle: some View {
         ZStack(alignment: .leading) {
             Rectangle().fill(Theme.border.opacity(0.72)).frame(width: 1)
@@ -325,8 +326,8 @@ struct ContentView: View {
                     }
                 }
             )
-            .frame(width: 16)
-            .offset(x: -8) // 让 16px 热区跨在分隔线两侧（各 8px），尽量少压住右栏内容
+            .frame(width: 12)
+            // 不再向左偏移:左侧 1px 都不占,避免压住聊天区滚动条;12px 落在侧栏内容的留白上。
             .frame(maxHeight: .infinity)
         }
         .frame(width: 1)

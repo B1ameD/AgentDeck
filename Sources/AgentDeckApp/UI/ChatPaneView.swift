@@ -34,7 +34,10 @@ struct ChatPaneView: View {
         ScrollViewReader { proxy in
         GeometryReader { outer in
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 10) {
+            // 注意是**急切** VStack:可见消息已被 TranscriptWindow 截到尾部窗口(默认 40 条),
+            // 全部气泡高度一次定型——LazyVStack 在上滑时才物化上方气泡,NSTextView 真实高度
+            // 迟到会顶得内容跳动(「浮现移动」),而窗口化后急切渲染的成本是有界的。
+            VStack(alignment: .leading, spacing: 10) {
                 if transcriptSlice.hiddenCount > 0 {
                     Button("显示更早的 \(transcriptSlice.hiddenCount) 条消息") {
                         transcriptLimit = TranscriptWindow.expandedLimit(
@@ -118,6 +121,8 @@ struct ChatPaneView: View {
         .onPreferenceChange(ChatBottomVisibleKey.self) { atBottom = $0 }
         // 侧栏开/合会改列宽并重排聊天：仅当本就贴底时，逐帧把视图保持贴底（无动画，故不会上下乱滚）。
         .onChange(of: sidebarVisible) { _, _ in keepPinnedToBottomIfNeeded(proxy) }
+        // 窗口缩放（尤其改高度）同理：视口变小时若不重锚，底部最新消息会被推出可视区（内容“不可见”）。
+        .onChange(of: outer.size) { _, _ in keepPinnedToBottomIfNeeded(proxy) }
         // 菜单打开时，聊天区覆盖一层透明遮罩：点击列表外即关闭菜单。
         .overlay {
             if composerMenuOpen {
