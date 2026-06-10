@@ -70,6 +70,7 @@ public final class WorkspaceController {
                 let reasoningEffort = snap.reasoningEffort.flatMap { ReasoningEffort(rawValue: $0) } ?? .medium
                 let interactionMode = InteractionMode.restore(snap.interactionMode)
                 let command = snap.command.flatMap { AgentCommand(rawValue: $0) } ?? .new
+                let stored = conversationStore.load(id: snap.id) // 一次读盘同时取 messages 与 usage
                 return AgentSession(
                     id: UUID(uuidString: snap.id) ?? UUID(),
                     agent: agent,
@@ -81,11 +82,12 @@ public final class WorkspaceController {
                     customTitle: snap.customTitle,
                     pinned: snap.pinned ?? false,
                     directoryPinned: snap.directoryPinned ?? false,
-                    messages: conversationStore.load(id: snap.id)?.messages ?? [],
+                    messages: stored?.messages ?? [],
                     permissionDecider: Self.makePermissionDecider(),
                     openCodeStreamer: streamer,
                     restoredBackendSessionID: snap.backendSessionID,
-                    restoredBackendSessionModel: snap.backendSessionModel
+                    restoredBackendSessionModel: snap.backendSessionModel,
+                    restoredUsage: stored?.usage
                 )
             }
             initialSessions = restored
@@ -326,7 +328,8 @@ public final class WorkspaceController {
             backendSessionID: session.backendSessionID,
             backendSessionModel: session.backendSessionModel,
             customTitle: session.customTitle,
-            pinned: session.pinned ? true : nil
+            pinned: session.pinned ? true : nil,
+            usage: session.usage.isEmpty ? nil : session.usage
         )
         try? conversationStore.save(conversation)
         persist() // 顺带刷新工作区快照（捕获当前模型/目录），保证重开后状态一致。
@@ -477,7 +480,8 @@ public final class WorkspaceController {
             permissionDecider: Self.makePermissionDecider(),
             openCodeStreamer: openCodeStreamer,
             restoredBackendSessionID: stored.backendSessionID,
-            restoredBackendSessionModel: stored.backendSessionModel
+            restoredBackendSessionModel: stored.backendSessionModel,
+            restoredUsage: stored.usage
         )
         attach(to: session)
         sessions.append(session)

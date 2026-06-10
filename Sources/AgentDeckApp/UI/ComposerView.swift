@@ -383,7 +383,7 @@ struct ComposerView: View {
         }
     }
 
-    /// 上下文用量（估算）：控制行最右 = 界面右下角。
+    /// 上下文用量（估算）+ 累计费用（真实计量，#28）：控制行最右 = 界面右下角。
     private var contextIndicator: some View {
         let tokens = ContextEstimate.estimatedTokens(forTexts: session.messages.map(\.text))
         let window = ContextEstimate.contextWindow(forModel: session.model)
@@ -391,8 +391,15 @@ struct ComposerView: View {
             ProgressView(value: ContextEstimate.usageFraction(tokens: tokens, window: window))
                 .progressViewStyle(.linear)
                 .frame(width: 74)
+            if !session.usage.isEmpty {
+                // 累计费用常显（来自 claude result 的真实计量）；token 明细在悬停里。
+                Text(session.usage.costLabel)
+                    .appFont(relative: -2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
+            }
             if hoveringContext {
-                Text("≈ \(ContextEstimate.compact(tokens)) / \(ContextEstimate.compact(window))")
+                Text(hoverDetail(tokens: tokens, window: window))
                     .appFont(relative: -2)
                     .foregroundStyle(.secondary)
                     .fixedSize()
@@ -401,7 +408,15 @@ struct ComposerView: View {
         }
         .contentShape(Rectangle())
         .onHover { hoveringContext = $0 }
-        .help("上下文用量（按字符估算，非真实 token 计数）")
+        .help(session.usage.isEmpty
+            ? "上下文用量（按字符估算，非真实 token 计数）"
+            : "上下文用量（估算）· 累计 \(session.usage.compactSummary)（真实计量，共 \(session.usage.turns) 轮）")
+    }
+
+    private func hoverDetail(tokens: Int, window: Int) -> String {
+        let estimate = "≈ \(ContextEstimate.compact(tokens)) / \(ContextEstimate.compact(window))"
+        guard !session.usage.isEmpty else { return estimate }
+        return "\(estimate) · \(session.usage.compactSummary)"
     }
 
     private var modeLabel: String {

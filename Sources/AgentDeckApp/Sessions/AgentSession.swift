@@ -165,6 +165,9 @@ public final class AgentSession: Identifiable {
     /// 选 “opus”/“default” 等别名时运行时才解析为具体版本——据此把 UI 芯片显示成真实版本（如 Opus 4.8）。
     /// 改选模型时清空（见 setSelectedModel），下一轮重新捕获。
     public var resolvedModel: String? { sessionContinuity.resolvedModel }
+    /// 会话累计 token/费用（真实计量，来自 claude result 行；其它 agent 暂无数据保持 isEmpty。#28）。
+    public private(set) var usage: SessionUsage
+    private var usageCapture = UsageCapture()
 
     private var isApprovedForCurrentDirectory: Bool {
         guard let approvedDirectory else { return false }
@@ -192,7 +195,8 @@ public final class AgentSession: Identifiable {
         changeTracker: any WorkspaceChangeTracking = GitWorkspaceChangeTracker(),
         openCodeStreamer: OpenCodeStreaming? = nil,
         restoredBackendSessionID: String? = nil,
-        restoredBackendSessionModel: String? = nil
+        restoredBackendSessionModel: String? = nil,
+        restoredUsage: SessionUsage? = nil
     ) {
         self.id = id
         self.agent = agent
@@ -218,6 +222,7 @@ public final class AgentSession: Identifiable {
             restoredSessionID: restoredBackendSessionID,
             restoredSessionModel: restoredBackendSessionModel
         )
+        self.usage = restoredUsage ?? SessionUsage()
         self.lastChangedPaths = messages.last(where: { $0.kind == .changeReview })?.fileLinks ?? []
         self.lastTurnDiffSummary = messages
             .last(where: { $0.kind == .changeReview && $0.turnDiffSummary != nil })?
@@ -676,6 +681,7 @@ public final class AgentSession: Identifiable {
                 switch event {
                 case .stdout(let chunk):
                     captureBackendSessionID(from: chunk)
+                    if let turn = usageCapture.consume(chunk) { usage.add(turn) }
                     pendingStdout += chunk
                     if pendingDrainTask == nil {
                         pendingDrainTask = Task { @MainActor in
@@ -701,6 +707,7 @@ public final class AgentSession: Identifiable {
             }
 
             flushBackendSessionCapture()
+            if let turn = usageCapture.flush() { usage.add(turn) }
             for parsed in parser.flush() {
                 apply(parsed, assistantIndex: &assistantIndex, producedMessage: &producedMessage)
             }

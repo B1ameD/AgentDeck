@@ -20,6 +20,8 @@ public struct StoredConversation: Codable, Equatable, Sendable, Identifiable {
     public var customTitle: String?
     /// 是否置顶。
     public var pinned: Bool?
+    /// 累计 token/费用（真实计量；旧文件缺失解码为 nil）。
+    public var usage: SessionUsage?
 
     public init(
         id: String,
@@ -35,7 +37,8 @@ public struct StoredConversation: Codable, Equatable, Sendable, Identifiable {
         backendSessionID: String? = nil,
         backendSessionModel: String? = nil,
         customTitle: String? = nil,
-        pinned: Bool? = nil
+        pinned: Bool? = nil,
+        usage: SessionUsage? = nil
     ) {
         self.id = id
         self.agentID = agentID
@@ -51,6 +54,7 @@ public struct StoredConversation: Codable, Equatable, Sendable, Identifiable {
         self.backendSessionModel = backendSessionModel
         self.customTitle = customTitle
         self.pinned = pinned
+        self.usage = usage
     }
 
     /// 展示标题：自定义标题优先；否则取首条用户消息的首行摘要；都没有则「新会话」。
