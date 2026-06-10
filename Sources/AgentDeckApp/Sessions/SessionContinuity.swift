@@ -46,13 +46,20 @@ struct SessionContinuity {
         agentKind == .claudeCode || agentKind == .openCode || agentKind == .codex
     }
 
-    /// 本次调用可透传的外部会话 id；模型切换时先使旧会话失效（不同模型间 id 不可续用）。
+    /// 本次调用可透传的外部会话 id。
+    /// 模型切换:claude 的 `--resume` 跨模型合法(2026-06-10 实测同 id 换 --model 续聊成功),
+    /// 保留会话只更新 key——此前一律作废是 #4 丢上下文的实证根因之一;
+    /// opencode/codex 的会话与模型绑定关系未证实,保守维持作废。
     mutating func externalSessionIDForInvocation(modelKey: String) -> String? {
         guard supportsBackendSession else { return nil }
         if backendSessionModel != modelKey {
-            backendSessionID = nil
-            backendSessionModel = modelKey
-            jsonBuffer = ""
+            if agentKind == .claudeCode {
+                backendSessionModel = modelKey
+            } else {
+                backendSessionID = nil
+                backendSessionModel = modelKey
+                jsonBuffer = ""
+            }
         }
         return backendSessionID
     }

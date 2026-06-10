@@ -78,17 +78,31 @@ final class SessionContinuityTests: XCTestCase {
 
     // MARK: - 模型切换失效
 
-    func testModelSwitchInvalidatesSessionAndPendingBuffer() {
+    func testModelSwitchInvalidatesSessionAndPendingBufferForCodex() {
+        var continuity = SessionContinuity(agentKind: .codex)
+        continuity.captureBackendSessionID(
+            from: "{\"type\":\"thread.started\",\"thread_id\":\"keep\"}\n",
+            modelKey: "gpt-5"
+        )
+        XCTAssertEqual(continuity.externalSessionIDForInvocation(modelKey: "gpt-5"), "keep", "同模型可续用")
+
+        // 残留半行 + 切换模型 → 会话 id 与缓冲都应作废(codex 会话与模型的绑定关系未证实,保守失效)
+        continuity.captureBackendSessionID(from: "{\"type\":\"thread.started\",\"thread_id\":\"sta", modelKey: "gpt-5")
+        XCTAssertNil(continuity.externalSessionIDForInvocation(modelKey: "gpt-5-mini"))
+        XCTAssertEqual(continuity.backendSessionModel, "gpt-5-mini")
+        continuity.captureBackendSessionID(from: "le\"}\n", modelKey: "gpt-5-mini")
+        XCTAssertNil(continuity.backendSessionID, "切换后旧缓冲不应拼出 stale id")
+    }
+
+    func testClaudeModelSwitchKeepsBackendSession() {
         var continuity = SessionContinuity(agentKind: .claudeCode)
         continuity.captureBackendSessionID(from: "{\"session_id\":\"keep\"}\n", modelKey: "opus")
-        XCTAssertEqual(continuity.externalSessionIDForInvocation(modelKey: "opus"), "keep", "同模型可续用")
-
-        // 残留半行 + 切换模型 → 会话 id 与缓冲都应作废
-        continuity.captureBackendSessionID(from: "{\"session_id\":\"stale", modelKey: "opus")
-        XCTAssertNil(continuity.externalSessionIDForInvocation(modelKey: "haiku"))
-        XCTAssertEqual(continuity.backendSessionModel, "haiku")
-        continuity.captureBackendSessionID(from: "\"}\n", modelKey: "haiku")
-        XCTAssertNil(continuity.backendSessionID, "切换后旧缓冲不应拼出 stale id")
+        XCTAssertEqual(
+            continuity.externalSessionIDForInvocation(modelKey: "haiku"),
+            "keep",
+            "claude --resume 跨模型合法(2026-06-10 实测同 id 续聊成功),切模型不应丢上下文"
+        )
+        XCTAssertEqual(continuity.backendSessionModel, "haiku", "key 跟随新模型,避免之后每轮重复走切换分支")
     }
 
     // MARK: - Claude 续聊策略

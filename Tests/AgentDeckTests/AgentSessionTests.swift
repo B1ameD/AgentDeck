@@ -347,6 +347,40 @@ final class AgentSessionTests: XCTestCase {
         XCTAssertEqual(session.resolvedModel, "claude-opus-4-8")
     }
 
+    func testClaudeModelSwitchStillResumesCapturedSession() async {
+        let config = AgentConfig(
+            id: "claude-code",
+            name: "Claude Code",
+            command: "/usr/bin/claude",
+            args: ["-p", "--output-format", "stream-json", "--verbose"],
+            env: [:],
+            workingDirectoryPolicy: .workspace,
+            inputMode: .oneShotArgument,
+            outputMode: .jsonLines,
+            supportsStop: true,
+            stopSignal: .interrupt
+        )
+        let runner = ClaudeSessionIDRunner(sessionID: "claude-session-abc")
+        let session = AgentSession(
+            agent: config,
+            workingDirectory: FileManager.default.temporaryDirectory,
+            runner: runner
+        )
+
+        await session.send("first")
+        session.setSelectedModel("haiku")
+        await session.send("second")
+
+        let calls = await runner.calls()
+        XCTAssertEqual(calls.count, 2)
+        guard calls.count == 2 else { return }
+        // claude --resume 跨模型合法(2026-06-10 实测同 id 续聊成功):切模型不应丢弃原生会话降级回放。
+        XCTAssertTrue(calls[1].args.contains("--resume"), "切模型后仍应原生 resume")
+        XCTAssertTrue(calls[1].args.contains("claude-session-abc"))
+        XCTAssertFalse((calls[1].args.last ?? "").contains("<agentdeck_history>"))
+        XCTAssertEqual(session.backendSessionID, "claude-session-abc")
+    }
+
     func testClaudeWithoutBackendSessionReplaysLocalHistoryOnNextSend() async {
         let config = AgentConfig(
             id: "claude-code",
