@@ -118,16 +118,7 @@ public final class AgentSession: Identifiable {
         public var request: PermissionRequest
     }
 
-    private enum ClaudeContinuityStrategy: Equatable {
-        case none
-        case nativeResume(String)
-        case localTranscriptReplay
-
-        var externalSessionID: String? {
-            if case .nativeResume(let id) = self { return id }
-            return nil
-        }
-    }
+    private typealias ClaudeContinuityStrategy = SessionContinuity.ClaudeStrategy
 
     private struct AgentRunOutcome: Equatable {
         var exitCode: Int32
@@ -160,15 +151,16 @@ public final class AgentSession: Identifiable {
     /// Stop 可能发生在 status 已为 running、但 baseline snapshot 尚未结束、runTask 尚未创建的窗口。
     /// 记录该请求，baseline 完成后在启动外部进程前消费掉，避免空按 Stop 后进程仍被启动。
     private var stopRequested = false
+    /// 后端会话连续性状态机（会话 id 捕获 / 模型切换失效 / Claude 回放策略），逻辑见 SessionContinuity.swift。
+    private var sessionContinuity: SessionContinuity
     /// CLI 返回的会话 id，用于继续对话（-s 或 --session-id）。
-    public private(set) var backendSessionID: String?
+    public var backendSessionID: String? { sessionContinuity.backendSessionID }
     /// 捕获 backendSessionID 时使用的模型 key，模型切换时清空会话 id。
-    public private(set) var backendSessionModel: String?
+    public var backendSessionModel: String? { sessionContinuity.backendSessionModel }
     /// Claude 输出流里实际解析到的模型 id（system/init 的顶层 `model` 或 assistant 的 `message.model`）。
     /// 选 “opus”/“default” 等别名时运行时才解析为具体版本——据此把 UI 芯片显示成真实版本（如 Opus 4.8）。
     /// 改选模型时清空（见 setSelectedModel），下一轮重新捕获。
-    public private(set) var resolvedModel: String?
-    private var backendSessionJSONBuffer = ""
+    public var resolvedModel: String? { sessionContinuity.resolvedModel }
 
     private var isApprovedForCurrentDirectory: Bool {
         guard let approvedDirectory else { return false }
@@ -217,8 +209,11 @@ public final class AgentSession: Identifiable {
         self.promptOptimizer = promptOptimizer
         self.changeTracker = changeTracker
         self.openCodeStreamer = openCodeStreamer
-        self.backendSessionID = restoredBackendSessionID
-        self.backendSessionModel = restoredBackendSessionModel
+        self.sessionContinuity = SessionContinuity(
+            agentKind: agent.kind,
+            restoredSessionID: restoredBackendSessionID,
+            restoredSessionModel: restoredBackendSessionModel
+        )
         self.lastChangedPaths = messages.last(where: { $0.kind == .changeReview })?.fileLinks ?? []
         self.lastTurnDiffSummary = messages
             .last(where: { $0.kind == .changeReview && $0.turnDiffSummary != nil })?
@@ -988,203 +983,54 @@ public final class AgentSession: Identifiable {
         activeRunAssistantIDs = []
     }
 
-    private func externalSessionIDForInvocation() -> String? {
-        guard agent.kind == .claudeCode || agent.kind == .openCode || agent.kind == .codex else { return nil }
+    // 连续性逻辑（策略/回放转录/会话 id 失效）已抽到 SessionContinuity.swift（#25 第一步），
+    // 此处仅保留绑定会话上下文（model/command/messages）的薄转发。
 
-        let modelKey = currentBackendModelKey
-        if backendSessionModel != modelKey {
-            backendSessionID = nil
-            backendSessionModel = modelKey
-            backendSessionJSONBuffer = ""
-        }
-        return backendSessionID
+    private func externalSessionIDForInvocation() -> String? {
+        sessionContinuity.externalSessionIDForInvocation(modelKey: currentBackendModelKey)
     }
 
     private func conversationTitleForInvocation(externalSessionID: String?) -> String? {
-        guard agent.kind == .openCode, externalSessionID == nil, command == .new else { return nil }
-        return "AgentDeck \(id.uuidString)"
+        sessionContinuity.conversationTitle(externalSessionID: externalSessionID, command: command, sessionUUID: id)
     }
 
     private func claudeContinuityStrategy(for prompt: String) -> ClaudeContinuityStrategy {
-        guard agent.kind == .claudeCode, command == .new else { return .none }
-
-        if let id = externalSessionIDForInvocation()?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !id.isEmpty {
-            return .nativeResume(id)
-        }
-
-        if let transcript = localHistoryTranscript(excludingUserPrompt: prompt),
-           !transcript.isEmpty {
-            return .localTranscriptReplay
-        }
-
-        return .none
+        sessionContinuity.claudeStrategy(
+            for: prompt,
+            command: command,
+            modelKey: currentBackendModelKey,
+            messages: messages
+        )
     }
 
     private func promptForInvocation(_ prompt: String, continuity: ClaudeContinuityStrategy) -> String {
-        guard agent.kind == .claudeCode,
-              command == .new,
-              continuity == .localTranscriptReplay,
-              let transcript = localHistoryTranscript(excludingUserPrompt: prompt),
-              !transcript.isEmpty else {
-            return prompt
-        }
-
-        return """
-        <agentdeck_history>
-        The following is the local AgentDeck transcript for this chat. Treat it as prior conversation context.
-
-        \(transcript)
-        </agentdeck_history>
-
-        Current user request:
-        \(prompt)
-        """
+        SessionContinuity.promptForInvocation(
+            prompt,
+            strategy: continuity,
+            agentKind: agent.kind,
+            command: command,
+            messages: messages
+        )
     }
 
     private func clearBackendSessionForLocalReplay() {
-        backendSessionID = nil
-        backendSessionModel = currentBackendModelKey
-        backendSessionJSONBuffer = ""
-    }
-
-    private func localHistoryTranscript(
-        excludingUserPrompt currentPrompt: String,
-        maxMessages: Int = 8,
-        maxCharacters: Int = 4_000
-    ) -> String? {
-        let currentUserText = Self.normalizedHistoryText(currentPrompt)
-        var seen = Set<String>()
-        var chunks: [String] = []
-
-        for message in messages.reversed() {
-            guard chunks.count < maxMessages,
-                  message.role == .user || message.role == .assistant else { continue }
-            let text = Self.sanitizedHistoryText(message.text)
-            guard !text.isEmpty else { continue }
-            if message.role == .user, Self.normalizedHistoryText(text) == currentUserText {
-                continue
-            }
-            let key = "\(message.role.rawValue):\(Self.normalizedHistoryText(text))"
-            guard seen.insert(key).inserted else { continue }
-            chunks.append("\(Self.historyRoleLabel(message.role)):\n\(text)")
-        }
-        chunks.reverse()
-        guard !chunks.isEmpty else { return nil }
-
-        let transcript = chunks.joined(separator: "\n\n")
-        guard transcript.count > maxCharacters else { return transcript }
-
-        let start = transcript.index(
-            transcript.endIndex,
-            offsetBy: -maxCharacters,
-            limitedBy: transcript.startIndex
-        ) ?? transcript.startIndex
-        return "[Earlier local transcript truncated]\n" + String(transcript[start...])
-    }
-
-    private static func sanitizedHistoryText(_ text: String) -> String {
-        // 历史回放给模型时，剥掉思考块与内联工具活动标记（两者都是给人看的 UI 噪声）。
-        normalizedHistoryText(ToolActivity.strip(from: strippingThinkingBlocks(from: text)))
-    }
-
-    private static func normalizedHistoryText(_ text: String) -> String {
-        text
-            .replacingOccurrences(of: "\r\n", with: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private static func strippingThinkingBlocks(from text: String) -> String {
-        var remaining = text
-        while let start = remaining.range(of: "<think>") {
-            guard let end = remaining.range(of: "</think>", range: start.upperBound..<remaining.endIndex) else {
-                remaining.removeSubrange(start.lowerBound..<remaining.endIndex)
-                break
-            }
-            remaining.removeSubrange(start.lowerBound..<end.upperBound)
-        }
-        return remaining
-    }
-
-    private static func historyRoleLabel(_ role: ChatMessage.Role) -> String {
-        switch role {
-        case .user: "user"
-        case .assistant: "assistant"
-        case .system: "system"
-        case .error: "error"
-        }
+        sessionContinuity.clearBackendSessionForLocalReplay(modelKey: currentBackendModelKey)
     }
 
     /// 用户在 /model 选择器改选模型：更新选择并清掉上一次解析到的具体版本，
     /// 避免芯片仍显示上一个模型的版本——下一轮运行会重新捕获。
     public func setSelectedModel(_ newModel: String) {
         model = newModel
-        resolvedModel = nil
+        sessionContinuity.clearResolvedModel()
     }
 
-    private var currentBackendModelKey: String {
-        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? "default" : trimmed
-    }
+    private var currentBackendModelKey: String { SessionContinuity.modelKey(model) }
 
     private func captureBackendSessionID(from chunk: String) {
-        guard agent.kind == .claudeCode || agent.kind == .openCode || agent.kind == .codex else { return }
-        backendSessionJSONBuffer += chunk
-
-        while let newline = backendSessionJSONBuffer.firstIndex(of: "\n") {
-            let line = String(backendSessionJSONBuffer[..<newline])
-            backendSessionJSONBuffer.removeSubrange(...newline)
-            captureBackendSessionID(fromJSONLine: line)
-        }
+        sessionContinuity.captureBackendSessionID(from: chunk, modelKey: currentBackendModelKey)
     }
 
     private func flushBackendSessionCapture() {
-        guard !backendSessionJSONBuffer.isEmpty else { return }
-        let line = backendSessionJSONBuffer
-        backendSessionJSONBuffer = ""
-        captureBackendSessionID(fromJSONLine: line)
-    }
-
-    private func captureBackendSessionID(fromJSONLine line: String) {
-        // 已拿到会话 id、且本轮模型也已解析时，无需再逐行解析 JSON（模型在 init 行即出现、单轮内不变）。
-        let needsSession = backendSessionID == nil
-        let needsModel = agent.kind == .claudeCode && resolvedModel == nil
-        guard needsSession || needsModel,
-              let data = line.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
-
-        if needsModel { captureResolvedModel(from: object) }
-        guard needsSession else { return }
-
-        switch agent.kind {
-        case .claudeCode:
-            if let sessionID = (object["session_id"] as? String) ?? (object["sessionID"] as? String),
-               !sessionID.isEmpty {
-                backendSessionID = sessionID
-                backendSessionModel = currentBackendModelKey
-            }
-        case .openCode:
-            if let sessionID = object["sessionID"] as? String, !sessionID.isEmpty {
-                backendSessionID = sessionID
-                backendSessionModel = currentBackendModelKey
-            }
-        case .codex:
-            if object["type"] as? String == "thread.started",
-               let threadID = object["thread_id"] as? String,
-               !threadID.isEmpty {
-                backendSessionID = threadID
-                backendSessionModel = currentBackendModelKey
-            }
-        case .pi, .custom:
-            break
-        }
-    }
-
-    /// 从 Claude 输出流捕获实际解析到的模型：优先 system/init 的顶层 `model`，回退 assistant 的 `message.model`。
-    private func captureResolvedModel(from object: [String: Any]) {
-        let candidate = (object["model"] as? String)
-            ?? ((object["message"] as? [String: Any])?["model"] as? String)
-        guard let candidate, !candidate.isEmpty, candidate != resolvedModel else { return }
-        resolvedModel = candidate
+        sessionContinuity.flushBackendSessionCapture(modelKey: currentBackendModelKey)
     }
 }
