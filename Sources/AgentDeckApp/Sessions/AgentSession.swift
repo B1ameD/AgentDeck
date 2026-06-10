@@ -626,6 +626,24 @@ public final class AgentSession: Identifiable {
         var stderrBuffer = ""
         var exitCode: Int32 = 0
 
+        // 流式合帧（#2）：stdout 先进缓冲，~80ms 排水一次再 parse+apply。
+        // 否则管道每次可读都全量重渲染增长中的 assistant 气泡（markdown 重解析），长输出 CPU 爆高。
+        // 全部状态只在 MainActor 上读写；流结束/取消前必须 drainPendingStdout() 同步排空。
+        var pendingStdout = ""
+        var pendingDrainTask: Task<Void, Never>?
+        func drainPendingStdout() {
+            guard !pendingStdout.isEmpty else { return }
+            let chunk = pendingStdout
+            pendingStdout = ""
+            for parsed in parser.parse(chunk) {
+                apply(parsed, assistantIndex: &assistantIndex, producedMessage: &producedMessage)
+            }
+        }
+        func cancelPendingDrain() {
+            pendingDrainTask?.cancel()
+            pendingDrainTask = nil
+        }
+
         // 非流式事件源（opencode 流式不可用时的回退 / 其它 agent 的常规路径）。
         func cliEvents() -> AsyncThrowingStream<ProcessStreamEvent, Error> {
             runner.stream(
@@ -658,8 +676,14 @@ public final class AgentSession: Identifiable {
                 switch event {
                 case .stdout(let chunk):
                     captureBackendSessionID(from: chunk)
-                    for parsed in parser.parse(chunk) {
-                        apply(parsed, assistantIndex: &assistantIndex, producedMessage: &producedMessage)
+                    pendingStdout += chunk
+                    if pendingDrainTask == nil {
+                        pendingDrainTask = Task { @MainActor in
+                            try? await Task.sleep(for: .milliseconds(80))
+                            guard !Task.isCancelled else { return }
+                            pendingDrainTask = nil
+                            drainPendingStdout()
+                        }
                     }
                 case .stderr(let chunk):
                     stderrBuffer += chunk
@@ -668,6 +692,8 @@ public final class AgentSession: Identifiable {
                 }
                 if Task.isCancelled { break }
             }
+            cancelPendingDrain()
+            drainPendingStdout()
 
             if Task.isCancelled {
                 recordTermination()
@@ -706,6 +732,9 @@ public final class AgentSession: Identifiable {
                 return outcome
             }
         } catch {
+            // 异常路径同样先排空合帧缓冲——否则挂着的 80ms 定时器会在 run 结束后迟到落消息。
+            cancelPendingDrain()
+            drainPendingStdout()
             if Task.isCancelled {
                 recordTermination()
                 return AgentRunOutcome(exitCode: -2, stderr: "", producedMessage: producedMessage)
