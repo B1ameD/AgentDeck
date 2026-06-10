@@ -41,6 +41,10 @@ struct ContentView: View {
         return SidebarSizing.width(forRatio: CGFloat(sidebarRatio), container: mainAreaWidth)
     }
 
+    /// 聊天区为右栏预留的**布局**宽度：拖拽期间冻结为起始值（右栏覆盖层实时跟随鼠标），
+    /// 松手才把最终宽度应用到布局——否则每帧改聊天列宽会触发所有可见气泡的全量 TextKit 重排（#2 拖拽卡顿）。
+    private var sidebarLayoutWidth: CGFloat { sidebarDragBaseline ?? sidebarWidth }
+
     /// 开/合都**布局瞬变**（中间栏立刻定到最终宽度、保持贴底），右栏只作为覆盖层以 offset 滑入/滑出。
     /// 故关闭时中间栏不必等右栏滑回——`showFiles` 控制的预留空间立刻归零，右栏在其上方滑走。
     private func openSidebar() {
@@ -384,7 +388,8 @@ struct ContentView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 // 为右栏预留的空间**瞬变**（开=右栏宽、合=0），故中间栏开/合都立刻定到最终宽度、不等滑动。
-                .padding(.trailing, showFiles ? sidebarWidth : 0)
+                // 拖拽分隔条期间用冻结宽度（见 sidebarLayoutWidth），松手才重排一次。
+                .padding(.trailing, showFiles ? sidebarLayoutWidth : 0)
 
                 // 右栏作为覆盖层只用 offset 滑入/滑出，不参与中间栏的布局——这样关闭时中间栏不用等它滑回。
                 if sidebarRendered {
