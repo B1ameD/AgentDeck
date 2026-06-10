@@ -125,11 +125,12 @@ struct ChatPaneView: View {
         // 切换会话时收回尾部窗口（@State 不随上面的 .id 重建）。
         .onChange(of: session.id) { _, _ in transcriptLimit = TranscriptWindow.defaultLimit }
         .onPreferenceChange(ChatBottomVisibleKey.self) { atBottom = $0 }
-        // 上滑接近窗口顶部 → 自动放出下一批更早消息。依赖 defaultScrollAnchor(.bottom)
-        // 在内容顶部增长时保持「距底偏移」不变，故释放不引起可视内容跳动。
+        // 上滑几乎到顶 → 自动放出下一批更早消息。注意 defaultScrollAnchor(.bottom)
+        // 只在贴底时保持距底偏移；翻历史时保持的是「距顶偏移」，释放后必须把原首条
+        // 钉回视口顶（见 releaseOlderMessages），否则视口压进新内容会连锁触发直至全量展开。
         .onPreferenceChange(ChatTopDistanceKey.self) { distance in
             guard distance > -TranscriptWindow.releaseDistance else { return }
-            releaseOlderMessagesIfNeeded()
+            releaseOlderMessages(proxy)
         }
         // 侧栏开/合会改列宽并重排聊天：仅当本就贴底时，逐帧把视图保持贴底（无动画，故不会上下乱滚）。
         .onChange(of: sidebarVisible) { _, _ in keepPinnedToBottomIfNeeded(proxy) }
@@ -185,16 +186,30 @@ struct ChatPaneView: View {
         session.messages[transcriptSlice.visibleStart...]
     }
 
-    /// 放出下一批更早消息（带 150ms 冷却：等上一批 TextKit 布局落定再继续，保持滚动顺滑）。
-    private func releaseOlderMessagesIfNeeded() {
+    /// 放出下一批更早消息，并把释放前的首条消息**无动画钉回视口顶**——
+    /// 新批次留在视口上方等用户继续上滑，而不是让视口滑进新内容（那会连锁触发到全量展开）。
+    /// 250ms 冷却让上一批 TextKit 布局落定。
+    private func releaseOlderMessages(_ proxy: ScrollViewProxy) {
         guard transcriptSlice.hiddenCount > 0 else { return }
         let now = Date()
-        guard now.timeIntervalSince(lastAutoRelease) > 0.15 else { return }
+        guard now.timeIntervalSince(lastAutoRelease) > 0.25 else { return }
         lastAutoRelease = now
+        let anchorID = visibleMessages.first?.id
         transcriptLimit = TranscriptWindow.scrollExpandedLimit(
             current: transcriptLimit,
             totalCount: session.messages.count
         )
+        guard let anchorID else { return }
+        Task { @MainActor in
+            // 双帧锚定（同 keepPinnedToBottomIfNeeded）：等新批次布局落定后再钉一次兜底。
+            for _ in 0..<2 {
+                await Task.yield()
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { proxy.scrollTo(anchorID, anchor: .top) }
+                try? await Task.sleep(for: .milliseconds(30))
+            }
+        }
     }
 
     /// 仅当用户本就贴底时，在侧栏宽度动画(≈0.28s)期间逐帧把视图保持在底部。

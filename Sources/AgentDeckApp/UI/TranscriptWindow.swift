@@ -8,8 +8,10 @@ enum TranscriptWindow {
     static let defaultLimit = 40
     /// 每次自动释放的条数:小批量+冷却,渐进展开避免一次性大重排(操作体感,用户反馈)。
     static let scrollReleaseBatch = 10
-    /// 触发自动释放的距离:窗口顶部哨兵进入视口上沿之上这个像素范围内即放出下一批。
-    static let releaseDistance: CGFloat = 600
+    /// 触发自动释放的距离:哨兵距视口上沿 80px 内(几乎滚到顶)才放下一批。
+    /// 距离放宽到 600 时曾连锁触发直至全量展开——翻历史时 SwiftUI 保持「距顶偏移」,
+    /// 释放后视口会压进新内容再次命中哨兵;配合释放后的锚定补偿,小距离+小批量才稳。
+    static let releaseDistance: CGFloat = 80
 
     /// 给定总条数与当前窗口上限,返回(隐藏条数, 可见后缀起始下标)。
     static func slice(totalCount: Int, limit: Int) -> (hiddenCount: Int, visibleStart: Int) {
