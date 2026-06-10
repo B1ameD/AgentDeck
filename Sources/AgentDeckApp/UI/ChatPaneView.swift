@@ -22,6 +22,9 @@ struct ChatPaneView: View {
     /// 用户当前是否处于（接近）聊天底部。只有「本就在底部」时，侧栏开合才把视图保持贴底；
     /// 若在上翻看历史，则不打扰其位置。避免之前「一开侧栏就强行滚到底」的突兀观感。
     @State private var atBottom = true
+    /// 长转录尾部窗口：只渲染最近 N 条，更早折叠在「显示更早」按钮后（#2 首帧性能——
+    /// bottom 锚定的 LazyVStack 会测量全部气泡高度，每条都是一次完整 TextKit 布局）。
+    @State private var transcriptLimit = TranscriptWindow.defaultLimit
 
     /// 聊天列表底部锚点 id（滚动到最新消息用）。
     private static let bottomAnchorID = "agentdeck.chat.bottomAnchor"
@@ -32,7 +35,20 @@ struct ChatPaneView: View {
         GeometryReader { outer in
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 10) {
-                ForEach(session.messages) { message in
+                if transcriptSlice.hiddenCount > 0 {
+                    Button("显示更早的 \(transcriptSlice.hiddenCount) 条消息") {
+                        transcriptLimit = TranscriptWindow.expandedLimit(
+                            current: transcriptLimit,
+                            totalCount: session.messages.count
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .appFont(relative: -2)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+                }
+                ForEach(visibleMessages) { message in
                     MessageBubble(
                         message: message,
                         workingDirectory: session.workingDirectory,
@@ -97,6 +113,8 @@ struct ChatPaneView: View {
         .defaultScrollAnchor(.bottom)
         // 进入/切换不同会话时重建滚动视图，确保每次点进都从最新（底部）开始，而非上次的位置。
         .id(session.id)
+        // 切换会话时收回尾部窗口（@State 不随上面的 .id 重建）。
+        .onChange(of: session.id) { _, _ in transcriptLimit = TranscriptWindow.defaultLimit }
         .onPreferenceChange(ChatBottomVisibleKey.self) { atBottom = $0 }
         // 侧栏开/合会改列宽并重排聊天：仅当本就贴底时，逐帧把视图保持贴底（无动画，故不会上下乱滚）。
         .onChange(of: sidebarVisible) { _, _ in keepPinnedToBottomIfNeeded(proxy) }
@@ -140,6 +158,14 @@ struct ChatPaneView: View {
         // 广播为用户显式批量动作，默认放行（见 WorkspaceController.broadcast），不再弹聚合授权框。
         }
         }
+    }
+
+    private var transcriptSlice: (hiddenCount: Int, visibleStart: Int) {
+        TranscriptWindow.slice(totalCount: session.messages.count, limit: transcriptLimit)
+    }
+
+    private var visibleMessages: ArraySlice<ChatMessage> {
+        session.messages[transcriptSlice.visibleStart...]
     }
 
     /// 仅当用户本就贴底时，在侧栏宽度动画(≈0.28s)期间逐帧把视图保持在底部。
