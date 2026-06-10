@@ -43,7 +43,7 @@ struct RailActionButton: View {
 }
 
 struct RecentConversationRow: View {
-    let conversation: StoredConversation
+    let conversation: ConversationSummary
     let onOpen: () -> Void
     let onRemoveFromRecent: () -> Void
     let onDelete: () -> Void

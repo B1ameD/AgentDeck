@@ -359,7 +359,7 @@ public final class WorkspaceController {
             pinned: session.pinned ? true : nil,
             usage: session.usage.isEmpty ? nil : session.usage
         )
-        try? conversationStore.save(conversation)
+        conversationStore.save(conversation)
         persist() // 顺带刷新工作区快照（捕获当前模型/目录），保证重开后状态一致。
     }
 
@@ -411,12 +411,13 @@ public final class WorkspaceController {
 
     /// 「Recent」：已落盘但当前未作为标签打开的会话（含 /clear 归档、关闭的标签），最近在前。
     /// 存于内存、仅在会话归档/恢复时刷新（见 refreshRecents），避免每次渲染读盘。
-    public private(set) var recentConversations: [StoredConversation] = []
+    public private(set) var recentConversations: [ConversationSummary] = []
 
-    /// 重新计算 Recent：取所有落盘会话，排除当前已作为标签打开的、以及用户从最近移除的，最近更新在前。
+    /// 重新计算 Recent：取所有落盘会话**摘要**（#31：不再为列标题解码全库消息正文），
+    /// 排除当前已作为标签打开的、以及用户从最近移除的，最近更新在前。
     private func refreshRecents() {
         let activeIDs = Set(sessions.map(\.id.uuidString))
-        recentConversations = conversationStore.all()
+        recentConversations = conversationStore.summaries()
             .filter { !activeIDs.contains($0.id) && !dismissedRecentIDs.contains($0.id) }
     }
 
