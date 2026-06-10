@@ -142,11 +142,14 @@ public final class WorkspaceController {
     }
 
     /// 切换工作区目录，并同步更新所有沿用 .workspace 策略的现有会话。
-    /// 已被用户手动锁定目录的标签（directoryPinned）不受影响——它们各自保有独立工作区。
+    /// 不受影响的标签：手动锁定目录的（directoryPinned）、已产生对话的（workingDirectoryLocked，
+    /// 换目录会让 claude --resume 失败而静默丢上下文，见 #4）。
     public func setWorkspaceDirectory(_ url: URL) {
         workspaceDirectory = url
         for session in sessions
-        where session.agent.workingDirectoryPolicy == .workspace && !session.directoryPinned {
+        where session.agent.workingDirectoryPolicy == .workspace
+            && !session.directoryPinned
+            && !session.workingDirectoryLocked {
             session.workingDirectory = url
         }
         persist()
@@ -154,16 +157,20 @@ public final class WorkspaceController {
 
     /// 为单个标签设置并**锁定**独立工作目录。锁定后切换全局工作区不再覆盖该标签，
     /// 从而让某个 agent 标签拥有自己的工作区（如把某标签固定到某个项目目录）。
+    /// 已产生对话的会话拒绝改目录（workingDirectoryLocked，#4）。
     public func setSessionDirectory(id: AgentSession.ID, to url: URL) {
-        guard let session = sessions.first(where: { $0.id == id }) else { return }
+        guard let session = sessions.first(where: { $0.id == id }),
+              !session.workingDirectoryLocked else { return }
         session.workingDirectory = url
         session.directoryPinned = true
         persist()
     }
 
     /// 解除标签的目录锁定，使其重新跟随全局工作区（.workspace 策略的标签随即切回当前工作区目录）。
+    /// 已产生对话的会话整体拒绝（解除锁定会让目录随下次全局切换漂移，#4）。
     public func clearSessionDirectoryPin(id: AgentSession.ID) {
-        guard let session = sessions.first(where: { $0.id == id }) else { return }
+        guard let session = sessions.first(where: { $0.id == id }),
+              !session.workingDirectoryLocked else { return }
         session.directoryPinned = false
         if session.agent.workingDirectoryPolicy == .workspace {
             session.workingDirectory = workspaceDirectory

@@ -105,9 +105,15 @@ struct AgentTabRow: View {
             Button("改名", action: beginRename)
             Button(session.pinned ? "取消置顶" : "置顶", action: onTogglePin)
             Divider()
-            Button("设置工作目录…", action: onSetWorkingDirectory)
-            if session.directoryPinned {
-                Button("跟随全局工作区", action: onUnpinWorkingDirectory)
+            if session.workingDirectoryLocked {
+                // 已有对话:目录锁死(换目录会让 claude resume 失败丢上下文,#4)。
+                Button("工作目录已随对话锁定") {}
+                    .disabled(true)
+            } else {
+                Button("设置工作目录…", action: onSetWorkingDirectory)
+                if session.directoryPinned {
+                    Button("跟随全局工作区", action: onUnpinWorkingDirectory)
+                }
             }
             Button("在 Finder 中打开工作区", action: onRevealWorkspace)
             Button("复制工作区路径", action: onCopyWorkspacePath)

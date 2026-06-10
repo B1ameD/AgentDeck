@@ -233,6 +233,61 @@ final class WorkspaceControllerTests: XCTestCase {
         XCTAssertEqual(session.workingDirectory, URL(filePath: "/tmp/other"))
     }
 
+    // claude 会话按 cwd 存储,换目录 resume 必失败丢上下文(#4 实测)——产生对话后目录锁死。
+    func testConversationLocksSessionDirectoryAgainstAllChanges() {
+        let controller = WorkspaceController(
+            registry: AgentRegistry(agents: [
+                makeAgent(id: "a", name: "A", command: "/bin/a", policy: .workspace)
+            ]),
+            workingDirectory: URL(filePath: "/tmp/workspace")
+        )
+        let session = controller.sessions[0]
+        session.loadHistory([ChatMessage(role: .user, text: "hello")])
+        XCTAssertTrue(session.workingDirectoryLocked)
+
+        // ① 右键「设置工作目录…」被拒
+        controller.setSessionDirectory(id: session.id, to: URL(filePath: "/tmp/project-x"))
+        XCTAssertEqual(session.workingDirectory, URL(filePath: "/tmp/workspace"))
+        XCTAssertFalse(session.directoryPinned)
+
+        // ② 全局切换不再带走有对话的会话;全局目录本身仍可换(供新标签使用)
+        controller.setWorkspaceDirectory(URL(filePath: "/tmp/other"))
+        XCTAssertEqual(session.workingDirectory, URL(filePath: "/tmp/workspace"))
+        XCTAssertEqual(controller.workspaceDirectory, URL(filePath: "/tmp/other"))
+    }
+
+    func testConversationLocksPinnedSessionAgainstUnpin() {
+        let controller = WorkspaceController(
+            registry: AgentRegistry(agents: [
+                makeAgent(id: "a", name: "A", command: "/bin/a", policy: .workspace)
+            ]),
+            workingDirectory: URL(filePath: "/tmp/workspace")
+        )
+        let session = controller.sessions[0]
+        controller.setSessionDirectory(id: session.id, to: URL(filePath: "/tmp/project-x"))
+        session.loadHistory([ChatMessage(role: .user, text: "hello")])
+
+        // ③「跟随全局工作区」被拒:保持锁定目录不动
+        controller.clearSessionDirectoryPin(id: session.id)
+        XCTAssertTrue(session.directoryPinned)
+        XCTAssertEqual(session.workingDirectory, URL(filePath: "/tmp/project-x"))
+        controller.setWorkspaceDirectory(URL(filePath: "/tmp/other"))
+        XCTAssertEqual(session.workingDirectory, URL(filePath: "/tmp/project-x"))
+    }
+
+    func testEmptySessionDirectoryStaysChangeable() {
+        let controller = WorkspaceController(
+            registry: AgentRegistry(agents: [
+                makeAgent(id: "a", name: "A", command: "/bin/a", policy: .workspace)
+            ]),
+            workingDirectory: URL(filePath: "/tmp/workspace")
+        )
+        let session = controller.sessions[0]
+        XCTAssertFalse(session.workingDirectoryLocked)
+        controller.setSessionDirectory(id: session.id, to: URL(filePath: "/tmp/project-x"))
+        XCTAssertEqual(session.workingDirectory, URL(filePath: "/tmp/project-x"))
+    }
+
     func testPinnedSessionDirectorySurvivesGlobalSwitchAfterRestore() throws {
         let base = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: base) }

@@ -91,6 +91,10 @@ public final class AgentSession: Identifiable {
     public var directoryPinned: Bool
     /// 选定的「恢复目标」会话 id（Claude 历史会话）；command == .resume 时透传给 --resume <id>。
     public var resumeSessionID: String?
+    /// 工作目录是否已随对话锁死：一旦产生任何消息即永久锁定。
+    /// claude 会话按 cwd 存储（实测换目录后 --resume 必报 No conversation found 而静默丢上下文），
+    /// 故从源头禁止改目录（#4）；/clear 换新空会话后可重新选择目录。
+    public var workingDirectoryLocked: Bool { !messages.isEmpty }
     public private(set) var messages: [ChatMessage]
     public private(set) var status: SessionStatus
     /// 最近一次运行「本轮改动的文件」相对路径（聊天里的改动卡片链接用）。
