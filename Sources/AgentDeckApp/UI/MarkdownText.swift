@@ -509,6 +509,39 @@ private final class MarkdownRenderCache {
     }
 }
 
+/// 跨实例的「(renderKey, 宽度) → 已测高度」缓存。
+/// 实例级 cachedHeight 在视图被 SwiftUI 重建（切会话 / 释放更早批次 / 结构重排）后即丢失，
+/// 同一内容同一宽度也要重跑 ensureLayout——这里兜住：重建实例、侧栏开/合在两个宽度间往返
+/// 都直接命中。仅主线程访问，FIFO 上限淘汰。
+@MainActor
+private final class MarkdownHeightCache {
+    static let shared = MarkdownHeightCache()
+    private var store: [String: CGFloat] = [:]
+    private var order: [String] = []
+    private let limit = 4000
+
+    func height(renderKey: String, width: CGFloat) -> CGFloat? {
+        store[Self.key(renderKey, width)]
+    }
+
+    func set(_ height: CGFloat, renderKey: String, width: CGFloat) {
+        let key = Self.key(renderKey, width)
+        if store[key] == nil {
+            order.append(key)
+            if order.count > limit {
+                let evicted = order.removeFirst()
+                store[evicted] = nil
+            }
+        }
+        store[key] = height
+    }
+
+    /// 宽度量化到 0.5pt——与实例级缓存的容差一致。
+    private static func key(_ renderKey: String, _ width: CGFloat) -> String {
+        "\(Int((width * 2).rounded()))|\(renderKey)"
+    }
+}
+
 private enum LinkedTextRenderer {
     private static let scheme = "agentdeck-link"
 
@@ -765,8 +798,15 @@ private final class LinkedTextView: NSTextView {
             return NSSize(width: NSView.noIntrinsicMetric, height: 0)
         }
         let width = max(bounds.width, 1)
-        if let cachedHeight, abs(width - cachedWidth) < 0.5 {
+        // 窗口实时缩放期间整体冻结（见 viewWillStartLiveResize）：沿用上次高度，松手一次性精确重排。
+        if let cachedHeight, inLiveResize || abs(width - cachedWidth) < 0.5 {
             return NSSize(width: NSView.noIntrinsicMetric, height: cachedHeight)
+        }
+        // 实例级缓存未命中 → 查跨实例缓存（视图被 SwiftUI 重建、或侧栏开/合往返两个宽度时命中）。
+        if let renderKey, let shared = MarkdownHeightCache.shared.height(renderKey: renderKey, width: width) {
+            cachedHeight = shared
+            cachedWidth = width
+            return NSSize(width: NSView.noIntrinsicMetric, height: shared)
         }
         textContainer.containerSize = NSSize(width: width, height: CGFloat.greatestFiniteMagnitude)
         layoutManager.ensureLayout(for: textContainer)
@@ -774,6 +814,9 @@ private final class LinkedTextView: NSTextView {
         let height = ceil(used.height)
         cachedHeight = height
         cachedWidth = width
+        if let renderKey {
+            MarkdownHeightCache.shared.set(height, renderKey: renderKey, width: width)
+        }
         return NSSize(width: NSView.noIntrinsicMetric, height: height)
     }
 
@@ -782,10 +825,28 @@ private final class LinkedTextView: NSTextView {
         // 若每次 setFrameSize 都 invalidate 会与 SwiftUI 布局形成重测回环（resize 卡顿）。
         let widthChanged = abs(newSize.width - frame.width) > 0.5
         super.setFrameSize(newSize)
-        if widthChanged {
+        // 窗口实时缩放期间不作废：换行宽度已冻结（widthTracksTextView=false），
+        // 每帧作废只会逼着 TextKit 全量重排。松手后 viewDidEndLiveResize 统一重排一次。
+        if widthChanged, !inLiveResize {
             cachedHeight = nil
             invalidateIntrinsicContentSize()
         }
+    }
+
+    /// 窗口实时缩放：冻结文本容器宽度（停止逐帧自动换行重排），高度沿用缓存——
+    /// 缩放过程中文本保持旧换行（短暂的右侧留白/裁切），松手后一次性精确重排。
+    /// 这是「窗口缩放卡顿」的根治：此前 widthTracksTextView 让 TextKit 每帧全量重排所有可见气泡。
+    override func viewWillStartLiveResize() {
+        super.viewWillStartLiveResize()
+        textContainer?.widthTracksTextView = false
+    }
+
+    override func viewDidEndLiveResize() {
+        super.viewDidEndLiveResize()
+        textContainer?.widthTracksTextView = true
+        textContainer?.containerSize = NSSize(width: max(bounds.width, 1), height: CGFloat.greatestFiniteMagnitude)
+        cachedHeight = nil
+        invalidateIntrinsicContentSize()
     }
 
     /// 内容（attributedString / 字体）变化后清掉高度缓存，强制按当前宽度重测一次。
