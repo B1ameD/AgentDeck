@@ -9,7 +9,7 @@ private struct ChatBottomVisibleKey: PreferenceKey {
 
 struct ChatPaneView: View {
     @Bindable var session: AgentSession
-    var workspace: WorkspaceController? = nil
+    var workspace: WorkspaceController?
     /// 右侧栏是否可见。开合会改变聊天列宽、触发重排——据此把滚动重新锚回底部（最新消息），见 issue 6。
     var sidebarVisible: Bool = false
     let onClose: () -> Void
@@ -436,7 +436,7 @@ private struct AssistantMessageContent: View {
     let isStreaming: Bool
     let runStartedAt: Date?
     let runEndedAt: Date?
-    var turnDiffSummary: TurnDiffSummary? = nil
+    var turnDiffSummary: TurnDiffSummary?
     var questionTools: [QuestionToolRecord] = []
     var subagentTasks: [SubagentTask] = []
     let linkContext: MessageLinkContext
@@ -707,7 +707,7 @@ private struct InlineToolActivityRow: View {
     let text: String
     var count: Int = 1
     let linkContext: MessageLinkContext
-    var turnDiffSummary: TurnDiffSummary? = nil
+    var turnDiffSummary: TurnDiffSummary?
     var onReviewChanges: (TurnDiffSummary) -> Void = { _ in }
 
     @State private var expanded = false

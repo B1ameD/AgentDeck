@@ -44,7 +44,7 @@ enum AttachmentInfo {
 struct AttachmentChipsView: View {
     let attachments: [URL]
     let onRemove: (URL) -> Void
-    var onOpen: ((URL) -> Void)? = nil
+    var onOpen: ((URL) -> Void)?
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {

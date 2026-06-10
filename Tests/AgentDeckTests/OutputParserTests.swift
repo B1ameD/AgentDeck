@@ -42,7 +42,7 @@ final class OutputParserTests: XCTestCase {
             events,
             [
                 OutputEvent(kind: .message, text: "one"),
-                OutputEvent(kind: .status, text: "two"),
+                OutputEvent(kind: .status, text: "two")
             ]
         )
     }

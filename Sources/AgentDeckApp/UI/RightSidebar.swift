@@ -25,8 +25,8 @@ struct RightSidebar: View {
     @Bindable var previewController: FilePreviewController
     @Binding var browserURL: URL?
     @Binding var expandedFolders: Set<URL> // 已展开文件夹，由父级常驻持有
-    var reviewSummary: TurnDiffSummary? = nil // 本轮 agent 改动的结构化逐行 diff（「审核」标签据此渲染）
-    var selectedSubagent: SubagentTask? = nil // 「子任务」标签展示的委派明细
+    var reviewSummary: TurnDiffSummary? // 本轮 agent 改动的结构化逐行 diff（「审核」标签据此渲染）
+    var selectedSubagent: SubagentTask? // 「子任务」标签展示的委派明细
     var onClose: () -> Void
 
     var body: some View {

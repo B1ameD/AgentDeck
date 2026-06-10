@@ -14,6 +14,9 @@ disabled_rules:
   - line_length            # 长中文注释/字符串较多，暂不限制
   - todo
   - trailing_whitespace
+  - multiple_closures_with_trailing_closure   # SwiftUI Button(action:) { } label: { } 惯用写法大量触发
+  - optional_data_string_conversion           # ProcessRunner 故意用 String(decoding:) 容忍 agent 输出中的非法 UTF-8
+  - non_optional_string_data_conversion
 
 opt_in_rules:
   - empty_count
@@ -37,6 +40,10 @@ cyclomatic_complexity:
   warning: 25
   error: 40
 
+function_parameter_count:
+  warning: 8
+  error: 12
+
 identifier_name:
   min_length: 1
   max_length: 60
@@ -45,5 +52,5 @@ nesting:
   type_level: 3
 
 large_tuple:
-  warning: 4
-  error: 5
+  warning: 6                 # AgentRegistry 内置预设用 6 元组，重构为 struct 后再收紧
+  error: 8

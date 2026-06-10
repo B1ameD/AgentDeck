@@ -747,7 +747,6 @@ private enum LinkedTextRenderer {
     }
 }
 
-
 private final class LinkedTextView: NSTextView {
     var payloads: [String: LinkedTextPayload] = [:]
     var renderKey: String?
@@ -872,7 +871,7 @@ private final class LinkedTextView: NSTextView {
     }
 
     private func payload(at event: NSEvent) -> LinkedTextPayload? {
-        guard let layoutManager, let textContainer, string.utf16.count > 0 else { return nil }
+        guard let layoutManager, let textContainer, !string.utf16.isEmpty else { return nil }
         var point = convert(event.locationInWindow, from: nil)
         point.x -= textContainerOrigin.x
         point.y -= textContainerOrigin.y

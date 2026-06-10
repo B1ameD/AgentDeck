@@ -183,7 +183,7 @@ public enum SlashCommandMenu {
     public static let modelAcronyms: [String: String] = [
         "gpt": "GPT", "api": "API", "ai": "AI", "llm": "LLM", "vlm": "VLM",
         "tts": "TTS", "stt": "STT", "asr": "ASR", "ocr": "OCR",
-        "vl": "VL", "oss": "OSS", "moe": "MoE", "xl": "XL", "hd": "HD", "rl": "RL",
+        "vl": "VL", "oss": "OSS", "moe": "MoE", "xl": "XL", "hd": "HD", "rl": "RL"
     ]
 
     /// 人类可读的模型名：去供应商（取最后一个 “/” 之后）、去开头厂商名（claude/anthropic）、

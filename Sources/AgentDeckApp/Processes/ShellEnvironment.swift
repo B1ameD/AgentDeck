@@ -75,7 +75,7 @@ enum ShellEnvironment {
             "\(home)/.bun/bin",
             "\(home)/.deno/bin",
             "\(home)/Library/pnpm",
-            "/opt/homebrew/opt/node/bin",
+            "/opt/homebrew/opt/node/bin"
         ]
         // nvm：各版本 bin，版本号大的在前（通常更可能是当前默认）。
         let nvm = "\(home)/.nvm/versions/node"

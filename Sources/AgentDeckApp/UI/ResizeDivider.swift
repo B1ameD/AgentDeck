@@ -12,7 +12,7 @@ struct ResizeDivider: NSViewRepresentable {
     var onChanged: (CGFloat) -> Void
     var onEnded: () -> Void
     /// 双击：恢复默认宽度（参考 Codex 分隔条双击复位）。可选。
-    var onDoubleClick: (() -> Void)? = nil
+    var onDoubleClick: (() -> Void)?
 
     func makeNSView(context: Context) -> ResizeDividerNSView {
         let view = ResizeDividerNSView()

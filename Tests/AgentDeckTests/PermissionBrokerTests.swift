@@ -8,7 +8,7 @@ final class PermissionBrokerTests: XCTestCase {
             (.normalAgentProcess, .allow),
             (.runsShellCommand, .ask),
             (.readsFiles, .ask),
-            (.modifiesFiles, .ask),
+            (.modifiesFiles, .ask)
         ]
 
         for testCase in cases {

@@ -48,6 +48,7 @@ public enum CLIInvocationBuilder {
 
     // MARK: - Claude Code（已核实：-p / --model / --effort / -r --resume / -c --continue / --permission-mode）
 
+    // swiftlint:disable:next function_parameter_count
     private static func claude(
         _ agent: AgentConfig,
         _ prompt: String,

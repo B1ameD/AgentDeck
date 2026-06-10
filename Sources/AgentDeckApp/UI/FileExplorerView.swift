@@ -179,8 +179,7 @@ private struct FileRow: View {
                 loaded = true
             }
             withAnimation(.easeInOut(duration: 0.18)) {
-                if isExpanded { expandedFolders.remove(node.url) }
-                else { expandedFolders.insert(node.url) }
+                if isExpanded { expandedFolders.remove(node.url) } else { expandedFolders.insert(node.url) }
             }
         } else {
             onOpenFile(node.url)

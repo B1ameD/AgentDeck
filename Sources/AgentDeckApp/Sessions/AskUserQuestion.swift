@@ -40,7 +40,7 @@ public struct AskUserQuestion: Equatable, Sendable, Codable {
     public var requestID: String?
     /// 仅运行时：Claude 经 AgentDeck 内置 MCP `ask_user` 工具阻塞提问时的回传句柄（不持久化）。
     /// 非空 → 答案经 AskUserBroker 唤醒挂起的工具调用，Claude 原地继续。
-    public var mcpRequestID: String? = nil
+    public var mcpRequestID: String?
 
     public init(questions: [Item], requestID: String? = nil) {
         self.questions = questions
