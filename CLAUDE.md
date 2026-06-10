@@ -47,10 +47,10 @@ swiftlint                  # 代码检查（配置在 .swiftlint.yml）
 
 ## 已知欠账
 
-未完成的 bug 修复与功能需求统一记录在 `docs/BACKLOG.md`，动手前先看那里，完成后更新状态。
+未完成的 bug 修复与功能需求统一在 [GitHub Issues](https://github.com/B1ameD/AgentDeck/issues) 管理（`gh issue list` 查看），动手前先看那里，完成后关闭对应 issue 并在提交信息引用编号（如 `closes #24`）。`docs/BACKLOG.md` 仅保留迁移对照,不再更新。
 
 ## 注意事项
 
 - 各 Agent 的会话恢复机制差异大（Claude Code 用 session id resume，OpenCode 走本地 server），改动 `Sessions/` 时注意区分。
-- `MarkdownText` 基于 NSTextView 的可选中渲染有已知性能问题（见 BACKLOG），改渲染相关代码务必手动验证长输出场景。
+- `MarkdownText` 基于 NSTextView 的可选中渲染有已知性能问题（见 issue #2），改渲染相关代码务必手动验证长输出场景。
 - 广播模式绕过单会话权限弹窗，权限相关改动要同时验证单发和广播两条路径。
