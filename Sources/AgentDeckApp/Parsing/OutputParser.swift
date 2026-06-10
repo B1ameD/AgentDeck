@@ -150,19 +150,22 @@ public final class OutputParser {
             return nil
         case "thread.started", "thread.completed", "turn.started", "turn.completed", "step_start", "step_finish":
             return nil
+        case "item.started", "item.updated":
+            // codex:工具类 item 在开始时即给一行摘要(updated 忽略,防重复行)。
+            guard type == "item.started", let item = object["item"] as? [String: Any] else { return nil }
+            return Self.codexToolEvent(item: item, completed: false)
         case "item.completed":
-            if let item = object["item"] as? [String: Any],
-               item["type"] as? String == "agent_message",
+            guard let item = object["item"] as? [String: Any] else { return nil }
+            if item["type"] as? String == "agent_message",
                let text = Self.messageText(in: item) {
                 return OutputEvent(kind: .message, text: text)
             }
-            if let item = object["item"] as? [String: Any],
-               let itemType = item["type"] as? String,
+            if let itemType = item["type"] as? String,
                ["reasoning", "thinking", "thought"].contains(itemType),
                let text = Self.messageText(in: item) {
                 return OutputEvent(kind: .message, text: Self.thinkingBlock(text))
             }
-            return nil
+            return Self.codexToolEvent(item: item, completed: true)
         default:
             // OpenCode 等：以 part.type 标记内容类型。reasoning/thinking 的 part 折叠为思考块，
             // 与 Claude 的 thinking 一致地走可折叠「思考过程」UI（之前会被当普通正文直接铺开）。
@@ -329,6 +332,42 @@ public final class OutputParser {
 
     private static func thinkingBlock(_ text: String) -> String {
         "<think>\(text)</think>"
+    }
+
+    /// codex exec --json 的工具类 item → 一行紧凑摘要(命令/改文件/MCP 工具/搜索)。
+    /// 开始时显示动作(用户即时看到 agent 在干什么),完成时只在失败/有最终清单时补一行。
+    private static func codexToolEvent(item: [String: Any], completed: Bool) -> OutputEvent? {
+        switch item["type"] as? String {
+        case "command_execution":
+            let command = (item["command"] as? String) ?? ""
+            guard !command.isEmpty else { return nil }
+            if !completed {
+                return OutputEvent(kind: .tool, text: "运行 \(command)")
+            }
+            if let exit = item["exit_code"] as? Int, exit != 0 {
+                return OutputEvent(kind: .tool, text: "⚠️ 命令失败（exit \(exit)）：\(command)")
+            }
+            return nil
+        case "file_change":
+            // 完成时才有最终改动清单。
+            guard completed else { return nil }
+            let paths = ((item["changes"] as? [[String: Any]]) ?? [])
+                .compactMap { $0["path"] as? String }
+                .map { ($0 as NSString).lastPathComponent }
+            guard !paths.isEmpty else { return nil }
+            return OutputEvent(kind: .tool, text: "修改 \(paths.joined(separator: "、"))")
+        case "mcp_tool_call":
+            guard !completed else { return nil }
+            let server = (item["server"] as? String) ?? ""
+            let tool = (item["tool"] as? String) ?? ""
+            guard !tool.isEmpty else { return nil }
+            return OutputEvent(kind: .tool, text: "工具 \(server.isEmpty ? tool : "\(server).\(tool)")")
+        case "web_search":
+            guard !completed else { return nil }
+            return (item["query"] as? String).map { OutputEvent(kind: .tool, text: "搜索 \($0)") }
+        default:
+            return nil
+        }
     }
 
     private static func openCodeToolEvent(in object: [String: Any]) -> OutputEvent? {

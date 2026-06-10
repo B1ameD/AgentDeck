@@ -227,8 +227,8 @@ public final class AgentSession: Identifiable {
         self.lastTurnDiffSummary = messages
             .last(where: { $0.kind == .changeReview && $0.turnDiffSummary != nil })?
             .turnDiffSummary
-        // Claude：启动内置 MCP 服务并注册「展示提问卡片」处理器，让 ask_user 工具能把提问投递到本会话。
-        if agent.kind == .claudeCode {
+        // Claude/Codex：启动内置 MCP 服务并注册「展示提问卡片」处理器，让 ask_user 工具能把提问投递到本会话。
+        if agent.kind == .claudeCode || agent.kind == .codex {
             AskUserMCPServer.shared.start()
             let sessionKey = id.uuidString
             AskUserBroker.shared.register(sessionID: sessionKey) { [weak self] question in
@@ -252,7 +252,9 @@ public final class AgentSession: Identifiable {
 
     /// 本会话 Claude 的 MCP ask_user 端点（服务器就绪才返回；否则 nil → 不注入，回退内置工具/追加消息）。
     private func claudeMCPEndpoint() -> String? {
-        guard agent.kind == .claudeCode, AskUserMCPServer.injectionEnabled else { return nil }
+        // codex 同样支持 streamable HTTP MCP(mcp_servers.<name>.url),提问卡片两家共用一套服务。
+        guard agent.kind == .claudeCode || agent.kind == .codex,
+              AskUserMCPServer.injectionEnabled else { return nil }
         return AskUserMCPServer.shared.endpointURL(forSession: id.uuidString)
     }
 

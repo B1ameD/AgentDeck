@@ -35,6 +35,15 @@ final class SessionUsageTests: XCTestCase {
         XCTAssertEqual(newlineCapture.consume(resultLine + "\n")?.inputTokens, 10)
     }
 
+    func testParsesCodexTurnCompletedUsage() {
+        let line = #"{"type":"turn.completed","usage":{"input_tokens":1200,"cached_input_tokens":1000,"output_tokens":80}}"#
+        let turn = UsageCapture.turnUsage(fromJSONLine: line)
+        XCTAssertEqual(turn?.inputTokens, 200, "净输入=总输入-缓存命中")
+        XCTAssertEqual(turn?.cacheReadTokens, 1000)
+        XCTAssertEqual(turn?.outputTokens, 80)
+        XCTAssertEqual(turn?.costUSD ?? -1, 0, "codex 不报费用,留给计价表补算")
+    }
+
     func testSessionUsageAccumulatesAndFormats() {
         var usage = SessionUsage()
         XCTAssertTrue(usage.isEmpty)

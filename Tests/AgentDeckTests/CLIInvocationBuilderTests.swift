@@ -222,9 +222,44 @@ final class CLIInvocationBuilderTests: XCTestCase {
         )
 
         XCTAssertEqual(invocation, CLIInvocation(
-            arguments: ["exec", "resume", "--json", "thread_123", "second"],
+            arguments: [
+                "exec", "resume", "--json", "--skip-git-repo-check",
+                "--dangerously-bypass-approvals-and-sandbox", "thread_123", "second"
+            ],
             stdin: nil
         ))
+    }
+
+    func testCodexPlanModeUsesReadOnlySandbox() {
+        let invocation = CLIInvocationBuilder.build(
+            agent: config(id: "codex", args: ["exec"], inputMode: .oneShotArgument, outputMode: .jsonLines),
+            prompt: "plan it",
+            model: "default",
+            reasoningEffort: .medium,
+            interactionMode: .plan,
+            command: .new,
+            attachments: []
+        )
+        XCTAssertEqual(invocation, CLIInvocation(
+            arguments: ["exec", "--json", "--skip-git-repo-check", "--sandbox", "read-only", "plan it"],
+            stdin: nil
+        ))
+    }
+
+    func testCodexInjectsAskUserMCPEndpoint() {
+        let invocation = CLIInvocationBuilder.build(
+            agent: config(id: "codex", args: ["exec"], inputMode: .oneShotArgument, outputMode: .jsonLines),
+            prompt: "go",
+            model: "default",
+            reasoningEffort: .medium,
+            interactionMode: .build,
+            command: .new,
+            attachments: [],
+            mcpAskEndpoint: "http://127.0.0.1:9999/mcp/s1"
+        )
+        XCTAssertTrue(invocation.arguments.contains("-c"))
+        XCTAssertTrue(invocation.arguments.contains("mcp_servers.agentdeck.url=http://127.0.0.1:9999/mcp/s1"))
+        XCTAssertTrue(invocation.arguments.contains("--dangerously-bypass-approvals-and-sandbox"))
     }
 
     func testOpenCodeClampsExtendedEffortToHighVariant() {

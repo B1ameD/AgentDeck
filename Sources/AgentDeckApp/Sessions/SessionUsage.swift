@@ -90,22 +90,38 @@ struct UsageCapture {
         return Self.turnUsage(fromJSONLine: line)
     }
 
-    /// claude result 行：{"type":"result",…,"total_cost_usd":0.01,"usage":{"input_tokens":…}}。
+    /// claude result 行：{"type":"result",…,"total_cost_usd":0.01,"usage":{"input_tokens":…}}；
+    /// codex turn.completed 行：{"type":"turn.completed","usage":{"input_tokens":…,"cached_input_tokens":…}}。
     static func turnUsage(fromJSONLine line: String) -> TurnUsage? {
-        guard line.contains("total_cost_usd"),
+        guard line.contains("total_cost_usd") || line.contains("turn.completed"),
               let data = line.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              object["type"] as? String == "result" else { return nil }
-        var turn = TurnUsage()
-        turn.costUSD = (object["total_cost_usd"] as? Double) ?? 0
-        if let usage = object["usage"] as? [String: Any] {
-            turn.inputTokens = intValue(usage["input_tokens"])
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        switch object["type"] as? String {
+        case "result":
+            var turn = TurnUsage()
+            turn.costUSD = (object["total_cost_usd"] as? Double) ?? 0
+            if let usage = object["usage"] as? [String: Any] {
+                turn.inputTokens = intValue(usage["input_tokens"])
+                turn.outputTokens = intValue(usage["output_tokens"])
+                turn.cacheReadTokens = intValue(usage["cache_read_input_tokens"])
+                turn.cacheCreationTokens = intValue(usage["cache_creation_input_tokens"])
+            }
+            guard turn.costUSD > 0 || turn.inputTokens > 0 || turn.outputTokens > 0 else { return nil }
+            return turn
+        case "turn.completed":
+            // codex 不报费用(可由计价表按模型补算);input_tokens 含缓存,拆出净输入。
+            guard let usage = object["usage"] as? [String: Any] else { return nil }
+            var turn = TurnUsage()
+            let input = intValue(usage["input_tokens"])
+            let cached = intValue(usage["cached_input_tokens"])
+            turn.inputTokens = max(0, input - cached)
+            turn.cacheReadTokens = cached
             turn.outputTokens = intValue(usage["output_tokens"])
-            turn.cacheReadTokens = intValue(usage["cache_read_input_tokens"])
-            turn.cacheCreationTokens = intValue(usage["cache_creation_input_tokens"])
+            guard turn.inputTokens > 0 || turn.outputTokens > 0 || cached > 0 else { return nil }
+            return turn
+        default:
+            return nil
         }
-        guard turn.costUSD > 0 || turn.inputTokens > 0 || turn.outputTokens > 0 else { return nil }
-        return turn
     }
 
     private static func intValue(_ value: Any?) -> Int {

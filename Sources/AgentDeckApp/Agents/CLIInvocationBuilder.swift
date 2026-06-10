@@ -38,7 +38,10 @@ public enum CLIInvocationBuilder {
         case .openCode:
             return opencode(agent, prompt, model, reasoningEffort, command, attachments, externalSessionID, conversationTitle)
         case .codex:
-            return codex(agent, prompt, model, reasoningEffort, command, attachments, externalSessionID)
+            return codex(
+                agent, prompt, model, reasoningEffort, interactionMode,
+                command, attachments, externalSessionID, mcpAskEndpoint
+            )
         case .pi, .custom:
             // pi 为未知 CLI、custom 由用户自定义：都不注入任何未知 flag，
             // 仅透传静态 args + prompt（附件并入文本），避免发出 CLI 不认识的参数。
@@ -171,14 +174,17 @@ public enum CLIInvocationBuilder {
 
     // MARK: - Codex（本机未安装，未验证；按 `codex exec` 已知约定实现）
 
+    // swiftlint:disable:next function_parameter_count
     private static func codex(
         _ agent: AgentConfig,
         _ prompt: String,
         _ model: String,
         _ effort: ReasoningEffort,
+        _ mode: InteractionMode,
         _ command: AgentCommand,
         _ attachments: [URL],
-        _ externalSessionID: String?
+        _ externalSessionID: String?,
+        _ mcpAskEndpoint: String?
     ) -> CLIInvocation {
         var args = agent.args // 通常是 ["exec"]
 
@@ -194,6 +200,22 @@ public enum CLIInvocationBuilder {
         }
         if agent.outputMode == .jsonLines {
             args += ["--json"]
+        }
+        // AgentDeck 的工作目录不一定是 git 仓库;codex exec 默认拒绝在非 git 目录运行。
+        args += ["--skip-git-repo-check"]
+        switch mode {
+        case .plan:
+            // 只读沙箱＝计划模式:可读不可写,模型给出方案而非直接动手。
+            args += ["--sandbox", "read-only"]
+        case .build:
+            // 与 claude 的 bypassPermissions 语义对齐:AgentDeck 自己的权限门通过后全放行。
+            // 不取 workspace-write 中间档——其沙箱默认断网,npm/curl 等会莫名失败更难排查。
+            args += ["--dangerously-bypass-approvals-and-sandbox"]
+        }
+        if let endpoint = mcpAskEndpoint {
+            // codex 原生支持 streamable HTTP MCP(mcp_servers.<name>.url)。
+            // -c 的值先按 TOML 解析,URL 解析失败正好按字面字符串处理。
+            args += ["-c", "mcp_servers.agentdeck.url=\(endpoint)"]
         }
         if let model = normalizedModel(model) {
             args += ["-m", model]

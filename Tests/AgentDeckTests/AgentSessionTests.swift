@@ -260,6 +260,8 @@ final class AgentSessionTests: XCTestCase {
         XCTAssertEqual(calls.map(\.args), [[
             "exec",
             "resume",
+            "--skip-git-repo-check",
+            "--sandbox", "read-only",
             "-m", "gpt-5",
             "-c", "model_reasoning_effort=high",
             "continue this"
@@ -589,8 +591,11 @@ final class AgentSessionTests: XCTestCase {
 
         let calls = await runner.calls()
         XCTAssertEqual(calls.map(\.args), [
-            ["exec", "--json", "first"],
-            ["exec", "resume", "--json", "thread_agentdeck_window", "second"]
+            ["exec", "--json", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "first"],
+            [
+                "exec", "resume", "--json", "--skip-git-repo-check",
+                "--dangerously-bypass-approvals-and-sandbox", "thread_agentdeck_window", "second"
+            ]
         ])
         XCTAssertFalse(calls[1].args.contains("--last"))
     }
