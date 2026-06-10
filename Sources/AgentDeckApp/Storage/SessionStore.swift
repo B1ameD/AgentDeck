@@ -16,6 +16,8 @@ public struct SessionSnapshot: Codable, Equatable, Sendable {
     public var customTitle: String?
     /// 是否置顶（左栏排序时排在前面）。
     public var pinned: Bool?
+    /// 工作目录是否被手动锁定（右键「设置工作目录…」）；锁定的标签恢复后仍不随全局工作区切换而改变。
+    public var directoryPinned: Bool?
 
     public init(
         id: String,
@@ -29,7 +31,8 @@ public struct SessionSnapshot: Codable, Equatable, Sendable {
         backendSessionID: String? = nil,
         backendSessionModel: String? = nil,
         customTitle: String? = nil,
-        pinned: Bool? = nil
+        pinned: Bool? = nil,
+        directoryPinned: Bool? = nil
     ) {
         self.id = id
         self.agentID = agentID
@@ -43,6 +46,7 @@ public struct SessionSnapshot: Codable, Equatable, Sendable {
         self.backendSessionModel = backendSessionModel
         self.customTitle = customTitle
         self.pinned = pinned
+        self.directoryPinned = directoryPinned
     }
 }
 

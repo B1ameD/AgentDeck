@@ -193,6 +193,65 @@ final class WorkspaceControllerTests: XCTestCase {
         XCTAssertEqual(controller.sessions.first?.workingDirectory, URL(filePath: "/tmp/other"))
     }
 
+    func testSetSessionDirectoryPinsTabAndGlobalSwitchSkipsIt() {
+        let controller = WorkspaceController(
+            registry: AgentRegistry(agents: [
+                makeAgent(id: "a", name: "A", command: "/bin/a", policy: .workspace),
+                makeAgent(id: "b", name: "B", command: "/bin/b", policy: .workspace)
+            ]),
+            workingDirectory: URL(filePath: "/tmp/workspace"),
+            initialPaneCount: 2
+        )
+        let pinned = controller.sessions[0]
+        let follower = controller.sessions[1]
+
+        controller.setSessionDirectory(id: pinned.id, to: URL(filePath: "/tmp/project-x"))
+        XCTAssertTrue(pinned.directoryPinned)
+        XCTAssertEqual(pinned.workingDirectory, URL(filePath: "/tmp/project-x"))
+
+        // 切换全局工作区：未锁定标签跟随，锁定标签保持独立目录。
+        controller.setWorkspaceDirectory(URL(filePath: "/tmp/other"))
+        XCTAssertEqual(pinned.workingDirectory, URL(filePath: "/tmp/project-x"))
+        XCTAssertEqual(follower.workingDirectory, URL(filePath: "/tmp/other"))
+    }
+
+    func testClearSessionDirectoryPinResumesFollowingWorkspace() {
+        let controller = WorkspaceController(
+            registry: AgentRegistry(agents: [
+                makeAgent(id: "a", name: "A", command: "/bin/a", policy: .workspace)
+            ]),
+            workingDirectory: URL(filePath: "/tmp/workspace")
+        )
+        let session = controller.sessions[0]
+        controller.setSessionDirectory(id: session.id, to: URL(filePath: "/tmp/project-x"))
+
+        controller.clearSessionDirectoryPin(id: session.id)
+        XCTAssertFalse(session.directoryPinned)
+        // 解锁后切回当前工作区，并重新跟随后续切换。
+        XCTAssertEqual(session.workingDirectory, URL(filePath: "/tmp/workspace"))
+        controller.setWorkspaceDirectory(URL(filePath: "/tmp/other"))
+        XCTAssertEqual(session.workingDirectory, URL(filePath: "/tmp/other"))
+    }
+
+    func testPinnedSessionDirectorySurvivesGlobalSwitchAfterRestore() throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let store = SessionStore(baseDirectory: base)
+        let registry = AgentRegistry(agents: [makeAgent(id: "a", name: "A", command: "/bin/a", policy: .workspace)])
+
+        let first = WorkspaceController(registry: registry, store: store)
+        first.setSessionDirectory(id: first.sessions[0].id, to: URL(filePath: "/tmp/project-x"))
+
+        // 从同一 store 恢复：锁定状态与独立目录都应保留。
+        let restored = WorkspaceController(registry: registry, store: store)
+        XCTAssertTrue(restored.sessions[0].directoryPinned)
+        XCTAssertEqual(restored.sessions[0].workingDirectory, URL(filePath: "/tmp/project-x"))
+
+        // 恢复后切换全局工作区仍不影响锁定标签。
+        restored.setWorkspaceDirectory(URL(filePath: "/tmp/other"))
+        XCTAssertEqual(restored.sessions[0].workingDirectory, URL(filePath: "/tmp/project-x"))
+    }
+
     func testBroadcastSendsOriginalPromptToAllOpenSessions() async {
         let registry = AgentRegistry(agents: [
             makeAgent(id: "pi-local", name: "Pi", command: "/usr/bin/true")

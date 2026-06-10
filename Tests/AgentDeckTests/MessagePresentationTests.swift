@@ -406,28 +406,35 @@ final class MessagePresentationTests: XCTestCase {
         XCTAssertEqual(RunDurationPresentation.timerInsertionIndex(in: blocks), 0)
     }
 
-    func testCollapseHidesThinkingButKeepsToolRowsVisible() {
-        // 折叠只藏思考：正文、错误、工具活动行都保留（工具行带 diff，不能被折叠藏掉）。
+    func testCollapseHidesThinkingAndToolRows() {
+        // 折叠运行细节：思考 + 工具活动行一并隐藏；正文、错误、委派任务保留可见。
         XCTAssertTrue(RunProcessDetailPresentation.shouldRender(.text("正文"), detailsHidden: true))
         XCTAssertTrue(RunProcessDetailPresentation.shouldRender(.inlineError("错误"), detailsHidden: true))
+        XCTAssertTrue(RunProcessDetailPresentation.shouldRender(.subagentRef(id: "id", label: "委派"), detailsHidden: true))
         XCTAssertFalse(RunProcessDetailPresentation.shouldRender(.thinking("分析"), detailsHidden: true))
-        XCTAssertTrue(RunProcessDetailPresentation.shouldRender(.toolCall("读取 a.swift"), detailsHidden: true))
+        XCTAssertFalse(RunProcessDetailPresentation.shouldRender(.toolCall("读取 a.swift"), detailsHidden: true))
 
+        // 未折叠时全部显示。
         XCTAssertTrue(RunProcessDetailPresentation.shouldRender(.thinking("分析"), detailsHidden: false))
         XCTAssertTrue(RunProcessDetailPresentation.shouldRender(.toolCall("读取 a.swift"), detailsHidden: false))
     }
 
-    func testContainsCollapsibleThinkingDetectsThinkingBlocksOnly() {
+    func testContainsCollapsibleProcessDetailsDetectsThinkingOrTools() {
         let withThinking = [
-            MessagePresentation.CollapsedBlock(block: .toolCall("读取 a"), count: 1),
+            MessagePresentation.CollapsedBlock(block: .text("答案"), count: 1),
             MessagePresentation.CollapsedBlock(block: .thinking("分析"), count: 1)
         ]
-        let withoutThinking = [
+        let withToolsOnly = [
             MessagePresentation.CollapsedBlock(block: .toolCall("读取 a"), count: 1),
             MessagePresentation.CollapsedBlock(block: .text("答案"), count: 1)
         ]
-        XCTAssertTrue(RunProcessDetailPresentation.containsCollapsibleThinking(withThinking))
-        XCTAssertFalse(RunProcessDetailPresentation.containsCollapsibleThinking(withoutThinking))
+        let neither = [
+            MessagePresentation.CollapsedBlock(block: .text("答案"), count: 1),
+            MessagePresentation.CollapsedBlock(block: .inlineError("错误"), count: 1)
+        ]
+        XCTAssertTrue(RunProcessDetailPresentation.containsCollapsibleProcessDetails(withThinking))
+        XCTAssertTrue(RunProcessDetailPresentation.containsCollapsibleProcessDetails(withToolsOnly))
+        XCTAssertFalse(RunProcessDetailPresentation.containsCollapsibleProcessDetails(neither))
     }
 
     func testProcessDetailToggleAvoidsMovingLayoutTransitions() {

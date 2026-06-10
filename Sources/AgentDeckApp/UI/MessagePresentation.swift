@@ -339,23 +339,25 @@ enum RunProcessDetailPresentation {
     static let animatesLayoutOnToggle = false
     static let usesMovingTransition = false
 
-    /// 折叠只针对**思考过程**：折叠时隐藏思考块，但工具活动行（读取/编辑/运行…）始终保留——
-    /// 这样既能在输出结束后自动收起冗长思考（issue 3），又不会把「编辑 X +N −M」这类带 diff 的工具行一并藏掉（issue 4）。
+    /// 折叠「运行细节」：折叠时隐藏**思考过程**与**工具活动行**（读取/编辑/运行…），
+    /// 只保留正文、错误、提问与委派任务（子代理）等需要持续可见的内容。
     static func shouldRender(_ block: AssistantContentBlock, detailsHidden: Bool) -> Bool {
         guard detailsHidden else { return true }
         switch block {
-        case .thinking:
+        case .thinking, .toolCall:
             return false
-        case .text, .inlineError, .toolCall, .questionRef, .subagentRef:
+        case .text, .inlineError, .questionRef, .subagentRef:
             return true
         }
     }
 
-    /// 是否含可折叠的思考块（决定运行时间行是否显示折叠箭头、是否在结束时自动折叠）。
-    static func containsCollapsibleThinking(_ blocks: [MessagePresentation.CollapsedBlock]) -> Bool {
+    /// 是否含可折叠的运行细节（思考或工具活动）——决定运行时间行是否显示折叠箭头、是否在结束时自动折叠。
+    static func containsCollapsibleProcessDetails(_ blocks: [MessagePresentation.CollapsedBlock]) -> Bool {
         blocks.contains { collapsed in
-            if case .thinking = collapsed.block { return true }
-            return false
+            switch collapsed.block {
+            case .thinking, .toolCall: return true
+            default: return false
+            }
         }
     }
 }

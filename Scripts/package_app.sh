@@ -3,7 +3,7 @@ set -euo pipefail
 
 APP_NAME="AgentDeck"
 BUNDLE_ID="com.agentdeck.app"
-VERSION="0.1.0"
+VERSION="1.1.0"
 SKIP_BUILD=0
 BUILD_PATH=".build"
 OUTPUT_PATH="dist"

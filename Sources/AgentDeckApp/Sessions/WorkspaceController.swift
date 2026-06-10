@@ -80,6 +80,7 @@ public final class WorkspaceController {
                     command: command,
                     customTitle: snap.customTitle,
                     pinned: snap.pinned ?? false,
+                    directoryPinned: snap.directoryPinned ?? false,
                     messages: conversationStore.load(id: snap.id)?.messages ?? [],
                     permissionDecider: Self.makePermissionDecider(),
                     openCodeStreamer: streamer,
@@ -141,10 +142,31 @@ public final class WorkspaceController {
     }
 
     /// 切换工作区目录，并同步更新所有沿用 .workspace 策略的现有会话。
+    /// 已被用户手动锁定目录的标签（directoryPinned）不受影响——它们各自保有独立工作区。
     public func setWorkspaceDirectory(_ url: URL) {
         workspaceDirectory = url
-        for session in sessions where session.agent.workingDirectoryPolicy == .workspace {
+        for session in sessions
+        where session.agent.workingDirectoryPolicy == .workspace && !session.directoryPinned {
             session.workingDirectory = url
+        }
+        persist()
+    }
+
+    /// 为单个标签设置并**锁定**独立工作目录。锁定后切换全局工作区不再覆盖该标签，
+    /// 从而让某个 agent 标签拥有自己的工作区（如把某标签固定到某个项目目录）。
+    public func setSessionDirectory(id: AgentSession.ID, to url: URL) {
+        guard let session = sessions.first(where: { $0.id == id }) else { return }
+        session.workingDirectory = url
+        session.directoryPinned = true
+        persist()
+    }
+
+    /// 解除标签的目录锁定，使其重新跟随全局工作区（.workspace 策略的标签随即切回当前工作区目录）。
+    public func clearSessionDirectoryPin(id: AgentSession.ID) {
+        guard let session = sessions.first(where: { $0.id == id }) else { return }
+        session.directoryPinned = false
+        if session.agent.workingDirectoryPolicy == .workspace {
+            session.workingDirectory = workspaceDirectory
         }
         persist()
     }
@@ -168,7 +190,8 @@ public final class WorkspaceController {
                     backendSessionID: session.backendSessionID,
                     backendSessionModel: session.backendSessionModel,
                     customTitle: session.customTitle,
-                    pinned: session.pinned ? true : nil
+                    pinned: session.pinned ? true : nil,
+                    directoryPinned: session.directoryPinned ? true : nil
                 )
             },
             recentWorkspace: workspaceDirectory.path,
@@ -268,6 +291,7 @@ public final class WorkspaceController {
             model: old.model,
             reasoningEffort: old.reasoningEffort,
             interactionMode: old.interactionMode,
+            directoryPinned: old.directoryPinned,
             timeout: old.timeout,
             permissionDecider: Self.makePermissionDecider(),
             openCodeStreamer: openCodeStreamer

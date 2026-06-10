@@ -86,6 +86,9 @@ public final class AgentSession: Identifiable {
     public var customTitle: String?
     /// 标签是否置顶（左栏排序时置顶项在前）。
     public var pinned: Bool
+    /// 该标签的工作目录是否被用户手动锁定（右键「设置工作目录…」）。
+    /// 锁定后切换全局工作区不会再覆盖本标签目录，从而让单个标签拥有独立工作区。
+    public var directoryPinned: Bool
     /// 选定的「恢复目标」会话 id（Claude 历史会话）；command == .resume 时透传给 --resume <id>。
     public var resumeSessionID: String?
     public private(set) var messages: [ChatMessage]
@@ -182,6 +185,7 @@ public final class AgentSession: Identifiable {
         command: AgentCommand = .new,
         customTitle: String? = nil,
         pinned: Bool = false,
+        directoryPinned: Bool = false,
         resumeSessionID: String? = nil,
         messages: [ChatMessage] = [],
         status: SessionStatus = .idle,
@@ -203,6 +207,7 @@ public final class AgentSession: Identifiable {
         self.command = command
         self.customTitle = customTitle
         self.pinned = pinned
+        self.directoryPinned = directoryPinned
         self.resumeSessionID = resumeSessionID
         self.messages = messages
         self.status = status

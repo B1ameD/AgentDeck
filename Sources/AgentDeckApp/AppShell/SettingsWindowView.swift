@@ -174,38 +174,43 @@ struct SettingsWindowView: View {
 
     /// 自定义提示词优化服务的字段（仅「自定义模型」模式可见）。
     private var customOptimizationFields: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Picker("服务商", selection: $promptOptProviderID) {
-                ForEach(PromptOptimizationProvider.all) { provider in
-                    Text(provider.displayName).tag(provider.id)
+        VStack(alignment: .leading, spacing: 14) {
+            settingRow("服务商", "自定义优化服务的提供方。") {
+                Picker("", selection: $promptOptProviderID) {
+                    ForEach(PromptOptimizationProvider.all) { provider in
+                        Text(provider.displayName).tag(provider.id)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(width: controlWidth)
+                .onChange(of: promptOptProviderID) { _, providerID in
+                    applyPromptOptimizationProvider(providerID)
                 }
             }
-            .pickerStyle(.menu)
-            .frame(width: controlWidth)
-            .onChange(of: promptOptProviderID) { _, providerID in
-                applyPromptOptimizationProvider(providerID)
-            }
 
-            labeledField("Base URL") {
-                TextField("", text: $promptOptBaseURL)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: appFontPoints, design: .monospaced))
+            VStack(alignment: .leading, spacing: 12) {
+                labeledField("Base URL") {
+                    TextField("", text: $promptOptBaseURL)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: appFontPoints, design: .monospaced))
+                }
+                labeledField("模型") {
+                    TextField("", text: $promptOptModel)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: appFontPoints, design: .monospaced))
+                }
+                labeledField("API Key") {
+                    SecureField("", text: $promptOptAPIKey)
+                        .textFieldStyle(.roundedBorder)
+                }
             }
-            labeledField("模型") {
-                TextField("", text: $promptOptModel)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: appFontPoints, design: .monospaced))
-            }
-            labeledField("API Key") {
-                SecureField("", text: $promptOptAPIKey)
-                    .textFieldStyle(.roundedBorder)
-            }
+            .padding(12)
+            .background(Theme.panelRaised, in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous).stroke(Theme.hairline, lineWidth: 1)
+            )
         }
-        .padding(12)
-        .background(Theme.panelRaised, in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous).stroke(Theme.hairline, lineWidth: 1)
-        )
     }
 
     private var detectedAgentsSection: some View {
@@ -247,7 +252,7 @@ struct SettingsWindowView: View {
                 }
                 .labelsHidden()
                 .pickerStyle(.menu)
-                .frame(width: 120)
+                .frame(width: controlWidth)
             }
 
             settingRow("界面字体", "菜单 / 侧栏 / 聊天等界面文字的字体。") {
@@ -260,7 +265,7 @@ struct SettingsWindowView: View {
                 }
                 .labelsHidden()
                 .pickerStyle(.segmented)
-                .frame(width: 160)
+                .frame(width: controlWidth)
             }
         }
     }
@@ -372,7 +377,7 @@ struct SettingsWindowView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
-                    .frame(width: 160)
+                    .frame(width: controlWidth)
                 }
             } else {
                 Text("当前没有打开的会话。").font(bodyFont).foregroundStyle(.secondary)
@@ -554,21 +559,79 @@ struct SettingsWindowView: View {
 
     private func showChangelog() {
         let alert = NSAlert()
-        alert.messageText = "更新日志（\(Self.appVersion)）"
+        alert.messageText = "更新日志（\(Self.appVersion)）— MCP Server & 交互式提问"
         alert.informativeText = """
-        · 设置中心重构为：常规 / 外观 / 个性化 / 工作区 / 关于 五大分类
-        · 新增界面主题、语言、Agent 启用状态、提示词优化模式
-        · 外观新增字体大小、扩充等宽与界面字体选项
-        · 工作区支持切换当前项目与添加新工作区
+        新增
+        · MCP ask_user 服务器：Agent 可在对话中弹出多选 / 单选卡片向你提问，作答后原地继续
+        · 文件预览侧边栏（独立 FilePreview 模块）
+        · Subagent（委派任务）详情展示与交互优化
+
+        改进
+        · CLIInvocationBuilder 增强 subagent 处理
+        · OutputParser 消息解析、AgentSession 问题流程
+        · ChatPaneView 多项 UX 优化
         """
         alert.addButton(withTitle: "好")
         alert.runModal()
     }
 
     private func checkForUpdates() {
+        guard let url = URL(string: "https://api.github.com/repos/\(Self.githubRepo)/releases/latest") else { return }
+        Task {
+            do {
+                var request = URLRequest(url: url, timeoutInterval: 15)
+                request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+                request.setValue("AgentDeck", forHTTPHeaderField: "User-Agent")
+                let (data, response) = try await URLSession.shared.data(for: request)
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                guard status == 200 else {
+                    await MainActor.run { presentUpdateUnavailable(status: status) }
+                    return
+                }
+                let release = try JSONDecoder().decode(GitHubRelease.self, from: data)
+                await MainActor.run { presentUpdateResult(release) }
+            } catch {
+                await MainActor.run { presentUpdateError(error) }
+            }
+        }
+    }
+
+    /// 比对 GitHub 最新 release 与当前版本，提示是否有更新。
+    private func presentUpdateResult(_ release: GitHubRelease) {
+        let latest = release.tagName.trimmingCharacters(in: CharacterSet(charactersIn: "vV "))
+        let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
         let alert = NSAlert()
-        alert.messageText = "已是最新版本"
-        alert.informativeText = "当前版本：\(Self.appVersion)。"
+        if latest.compare(current, options: .numeric) == .orderedDescending {
+            alert.messageText = "发现新版本：v\(latest)"
+            let title = release.name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            alert.informativeText = (title.isEmpty ? "" : title + "\n\n") + "当前版本 v\(current)，是否前往 GitHub 下载？"
+            alert.addButton(withTitle: "前往下载")
+            alert.addButton(withTitle: "稍后")
+            if alert.runModal() == .alertFirstButtonReturn, let link = URL(string: release.htmlURL) {
+                NSWorkspace.shared.open(link)
+            }
+        } else {
+            alert.messageText = "已是最新版本"
+            alert.informativeText = "当前版本 v\(current)，已是最新。"
+            alert.addButton(withTitle: "好")
+            alert.runModal()
+        }
+    }
+
+    private func presentUpdateError(_ error: Error) {
+        let alert = NSAlert()
+        alert.messageText = "检查更新失败"
+        alert.informativeText = "无法连接 GitHub：\(error.localizedDescription)"
+        alert.addButton(withTitle: "好")
+        alert.runModal()
+    }
+
+    private func presentUpdateUnavailable(status: Int) {
+        let alert = NSAlert()
+        alert.messageText = "暂时无法检查更新"
+        alert.informativeText = status == 404
+            ? "未在 GitHub 找到发布信息（仓库可能尚未公开，或还没有 Release）。"
+            : "GitHub 返回状态码 \(status)，请稍后再试。"
         alert.addButton(withTitle: "好")
         alert.runModal()
     }
@@ -612,6 +675,20 @@ struct SettingsWindowView: View {
     private static var appVersion: String {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
         return "版本 \(version)"
+    }
+
+    private static let githubRepo = "B1ameD/AgentDeck"
+
+    /// GitHub releases/latest 响应（仅取所需字段）。
+    private struct GitHubRelease: Decodable {
+        let tagName: String
+        let htmlURL: String
+        let name: String?
+        enum CodingKeys: String, CodingKey {
+            case tagName = "tag_name"
+            case htmlURL = "html_url"
+            case name
+        }
     }
 }
 

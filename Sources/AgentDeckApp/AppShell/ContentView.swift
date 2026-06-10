@@ -107,6 +107,8 @@ struct ContentView: View {
                         onRename: { workspace.renameSession(id: session.id, to: $0) },
                         onTogglePin: { workspace.togglePinSession(id: session.id) },
                         onDelete: { workspace.deleteConversation(id: session.id.uuidString) },
+                        onSetWorkingDirectory: { chooseSessionDirectory(for: session) },
+                        onUnpinWorkingDirectory: { workspace.clearSessionDirectoryPin(id: session.id) },
                         onRevealWorkspace: { NSWorkspace.shared.activateFileViewerSelecting([session.workingDirectory]) },
                         onCopyWorkspacePath: { copyToPasteboard(session.workingDirectory.path) }
                     )
@@ -230,6 +232,19 @@ struct ContentView: View {
         panel.directoryURL = workspace.workspaceDirectory
         if panel.runModal() == .OK, let url = panel.url {
             workspace.setWorkspaceDirectory(url)
+        }
+    }
+
+    /// 为单个标签选择并锁定独立工作目录（右键「设置工作目录…」）。锁定后不随全局工作区切换而改变。
+    private func chooseSessionDirectory(for session: AgentSession) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = session.workingDirectory
+        panel.message = "为「\(session.displayTitle)」选择独立的工作目录"
+        if panel.runModal() == .OK, let url = panel.url {
+            workspace.setSessionDirectory(id: session.id, to: url)
         }
     }
 
@@ -578,6 +593,8 @@ private struct AgentTabRow: View {
     let onRename: (String) -> Void
     let onTogglePin: () -> Void
     let onDelete: () -> Void
+    let onSetWorkingDirectory: () -> Void
+    let onUnpinWorkingDirectory: () -> Void
     let onRevealWorkspace: () -> Void
     let onCopyWorkspacePath: () -> Void
 
@@ -669,6 +686,10 @@ private struct AgentTabRow: View {
             Button("改名", action: beginRename)
             Button(session.pinned ? "取消置顶" : "置顶", action: onTogglePin)
             Divider()
+            Button("设置工作目录…", action: onSetWorkingDirectory)
+            if session.directoryPinned {
+                Button("跟随全局工作区", action: onUnpinWorkingDirectory)
+            }
             Button("在 Finder 中打开工作区", action: onRevealWorkspace)
             Button("复制工作区路径", action: onCopyWorkspacePath)
             Divider()

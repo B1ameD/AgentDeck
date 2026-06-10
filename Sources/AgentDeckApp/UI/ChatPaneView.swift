@@ -448,23 +448,23 @@ private struct AssistantMessageContent: View {
 
     var body: some View {
         let renderBlocks = MessagePresentation.assistantTimelineBlocks(in: text)
-        // 折叠只针对思考过程：运行时间行的折叠箭头、结束后自动折叠都仅在「有思考块」时生效。
-        let hasThinking = RunProcessDetailPresentation.containsCollapsibleThinking(renderBlocks)
+        // 折叠「运行细节」：思考过程 + 工具活动一并折叠。折叠箭头与结束后自动折叠在「有思考或工具」时生效。
+        let hasProcessDetails = RunProcessDetailPresentation.containsCollapsibleProcessDetails(renderBlocks)
 
         VStack(alignment: .leading, spacing: 7) {
             if let runStartedAt {
                 RunTimerHeader(
                     startedAt: runStartedAt,
                     endedAt: runEndedAt,
-                    hasProcessDetails: hasThinking,
+                    hasProcessDetails: hasProcessDetails,
                     processDetailsHidden: processDetailsHidden
                 ) {
                     withAnimation(.easeOut(duration: 0.18)) { processDetailsHidden.toggle() }
                 }
             }
 
-            // 工具活动行（读取/编辑/运行…）始终展示，不随思考折叠而消失。
-            if !toolCalls.isEmpty {
+            // 「工具调用」汇总块随运行细节一并折叠。
+            if !toolCalls.isEmpty && !processDetailsHidden {
                 CollapsibleToolCallsBlock(toolCalls: toolCalls)
             }
 
@@ -506,10 +506,10 @@ private struct AssistantMessageContent: View {
                 }
             }
         }
-        // 运行结束即自动折叠**思考过程**（等效点击「运行总时间」行）；工具/编辑行保留可见。仅在有思考时折叠。
-        .onAppear { if runEndedAt != nil && hasThinking { processDetailsHidden = true } }
+        // 运行结束即自动折叠运行细节（思考 + 工具，等效点击「运行总时间」行）。仅在有可折叠细节时生效。
+        .onAppear { if runEndedAt != nil && hasProcessDetails { processDetailsHidden = true } }
         .onChange(of: runEndedAt) { _, newValue in
-            guard newValue != nil, hasThinking else { return }
+            guard newValue != nil, hasProcessDetails else { return }
             withAnimation(.easeOut(duration: 0.2)) { processDetailsHidden = true }
         }
     }
@@ -551,7 +551,7 @@ private struct RunTimerHeader: View {
                 timerLabel(now: now)
             }
             .buttonStyle(.plain)
-            .help(processDetailsHidden ? "展开思考过程" : "折叠思考过程")
+            .help(processDetailsHidden ? "展开运行细节" : "折叠运行细节")
         } else {
             timerLabel(now: now)
         }
