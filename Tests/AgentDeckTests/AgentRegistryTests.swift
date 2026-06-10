@@ -227,6 +227,58 @@ final class AgentRegistryTests: XCTestCase {
         return directory
     }
 
+    // MARK: - 校验分级(#30:致命→跳过,非致命→加载并提醒)
+
+    func testValidationWarningsFlagNonFatalIssues() throws {
+        let config = AgentConfig(
+            id: "x", name: "X", command: "/nonexistent/tool",
+            args: [], env: ["GOOD": "1", "BAD KEY": "1"],
+            workingDirectoryPolicy: .fixedPath, inputMode: .stdin, outputMode: .stream,
+            supportsStop: true, stopSignal: .interrupt,
+            fixedWorkingDirectory: "/nonexistent/dir-xyz"
+        )
+        XCTAssertNoThrow(try config.validate(), "非致命问题不该让 validate() 抛错")
+        let warnings = config.validationWarnings(executableResolver: { _ in nil })
+        XCTAssertTrue(warnings.contains { $0.contains("/nonexistent/tool") }, "可执行文件缺失")
+        XCTAssertTrue(warnings.contains { $0.contains("BAD KEY") }, "env 键含空格")
+        XCTAssertTrue(warnings.contains { $0.contains("/nonexistent/dir-xyz") }, "固定目录不存在")
+        XCTAssertFalse(warnings.contains { $0.contains("GOOD") })
+    }
+
+    func testValidationWarningsBareNameUsesResolver() {
+        let config = AgentConfig(
+            id: "x", name: "X", command: "sometool",
+            args: [], env: [:],
+            workingDirectoryPolicy: .workspace, inputMode: .stdin, outputMode: .stream,
+            supportsStop: true, stopSignal: .interrupt
+        )
+        XCTAssertTrue(
+            config.validationWarnings(executableResolver: { _ in "/usr/local/bin/sometool" }).isEmpty,
+            "裸名可解析 → 无警告"
+        )
+        XCTAssertTrue(
+            config.validationWarnings(executableResolver: { _ in nil })
+                .contains { $0.contains("sometool") },
+            "裸名解析不到 → 提醒(运行时仍会按登录 shell PATH 再试)"
+        )
+    }
+
+    func testLoadCustomAgentsKeepsAgentWithNonFatalWarnings() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let json = """
+        {"id":"warned","name":"W","command":"/bin/cat","args":[],"env":{"BAD KEY":"1"},\
+        "workingDirectoryPolicy":"workspace","inputMode":"stdin","outputMode":"stream",\
+        "supportsStop":true,"stopSignal":"interrupt"}
+        """
+        try json.write(to: dir.appendingPathComponent("warned.json"), atomically: true, encoding: .utf8)
+
+        let result = AgentRegistry.loadCustomAgents(from: dir, executableResolver: { _ in nil })
+        XCTAssertEqual(result.agents.map(\.id), ["warned"], "非致命问题仍加载")
+        XCTAssertTrue(result.warnings.contains { $0.contains("BAD KEY") && $0.contains("warned.json") })
+    }
+
     @discardableResult
     private func writeExecutable(named name: String, in directory: URL) throws -> URL {
         try writeFile(named: name, in: directory, permissions: 0o755)

@@ -288,6 +288,37 @@ final class WorkspaceControllerTests: XCTestCase {
         XCTAssertEqual(session.workingDirectory, URL(filePath: "/tmp/project-x"))
     }
 
+    // MARK: - Agent 配置热加载(#30)
+
+    func testReloadAgentRegistryPicksUpNewAndRemovedConfigs() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let controller = WorkspaceController(
+            registry: AgentRegistry(agents: [makeAgent(id: "builtin", name: "B", command: "/bin/b", policy: .workspace)]),
+            workingDirectory: URL(filePath: "/tmp/workspace"),
+            customAgentsDirectory: dir
+        )
+        XCTAssertFalse(controller.registry.agents.contains { $0.id == "hot-agent" })
+
+        let json = """
+        {"id":"hot-agent","name":"Hot","command":"/bin/cat","args":[],"env":{},\
+        "workingDirectoryPolicy":"workspace","inputMode":"stdin","outputMode":"stream",\
+        "supportsStop":true,"stopSignal":"interrupt"}
+        """
+        try json.write(to: dir.appendingPathComponent("hot.json"), atomically: true, encoding: .utf8)
+        controller.reloadAgentRegistry()
+        XCTAssertTrue(controller.registry.agents.contains { $0.id == "hot-agent" }, "重载后新配置可见")
+
+        controller.addSession(agentID: "hot-agent")
+        let session = controller.sessions.first { $0.agent.id == "hot-agent" }
+        XCTAssertNotNil(session)
+
+        try FileManager.default.removeItem(at: dir.appendingPathComponent("hot.json"))
+        controller.reloadAgentRegistry()
+        XCTAssertFalse(controller.registry.agents.contains { $0.id == "hot-agent" }, "删除后重载即消失")
+        XCTAssertEqual(session?.agent.command, "/bin/cat", "已开会话保留配置快照,不受重载影响")
+    }
+
     func testPinnedSessionDirectorySurvivesGlobalSwitchAfterRestore() throws {
         let base = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: base) }

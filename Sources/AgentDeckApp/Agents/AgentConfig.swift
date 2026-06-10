@@ -65,6 +65,40 @@ public struct AgentConfig: Codable, Equatable, Identifiable, Sendable {
         }
     }
 
+    /// 非致命问题（配置仍会加载，但大概率跑不起来）：与 validate()（致命→跳过）分级（#30）。
+    /// - 可执行文件：绝对/相对路径查可执行位；裸名先按 PATH 解析（运行时还会按登录 shell PATH 再解析一次，
+    ///   故裸名解析不到只是提醒）。
+    /// - env 键名：空/含 `=`/含空格 都会让子进程环境注入静默出错。
+    /// - 固定工作目录：不存在则每次运行都会失败。
+    public func validationWarnings(
+        executableResolver: (String) -> String? = AgentDetection.resolveExecutable(named:)
+    ) -> [String] {
+        var warnings: [String] = []
+        let cmd = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cmd.contains("/") {
+            let expanded = (cmd as NSString).expandingTildeInPath
+            if !FileManager.default.isExecutableFile(atPath: expanded) {
+                warnings.append("可执行文件不存在或缺少执行权限：\(cmd)")
+            }
+        } else if executableResolver(cmd) == nil {
+            warnings.append("PATH 中找不到「\(cmd)」（运行时会再按登录 shell PATH 解析，可能仍可用）")
+        }
+        for key in env.keys {
+            let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty || trimmed.contains("=") || trimmed.contains(" ") {
+                warnings.append("环境变量键名非法：「\(key)」")
+            }
+        }
+        if workingDirectoryPolicy == .fixedPath, let path = fixedWorkingDirectory {
+            let expanded = (path as NSString).expandingTildeInPath
+            var isDirectory: ObjCBool = false
+            if !FileManager.default.fileExists(atPath: expanded, isDirectory: &isDirectory) || !isDirectory.boolValue {
+                warnings.append("固定工作目录不存在：\(path)")
+            }
+        }
+        return warnings
+    }
+
     public enum WorkingDirectoryPolicy: String, Codable, Equatable, Sendable {
         case workspace
         case home

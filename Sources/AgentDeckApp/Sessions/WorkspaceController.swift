@@ -25,6 +25,10 @@ public final class WorkspaceController {
     private let openCodeStreamer: OpenCodeStreaming?
     /// 被用户从「最近」移除的会话 id：仅隐藏出 Recent，转录仍在历史检索可找回。持久化于快照。
     private var dismissedRecentIDs: Set<String>
+    /// 自定义 agent 配置目录（nil＝测试场景，热加载与手动重载都不动作）。
+    private let customAgentsDirectory: URL?
+    /// 目录监听（#30 热加载）：变更防抖后调 reloadAgentRegistry。
+    private var configWatcher: AgentConfigWatcher?
 
     /// 左栏展示用顺序：置顶项在前，组内保持插入顺序（不改动底层 sessions 顺序/快照）。
     public var orderedSessions: [AgentSession] {
@@ -45,7 +49,8 @@ public final class WorkspaceController {
         restoreSessions: [SessionSnapshot]? = nil,
         restoreDismissedRecents: [String]? = nil,
         conversationStore: ConversationStore = ConversationStore(),
-        openCodeStreamer: OpenCodeStreaming? = nil
+        openCodeStreamer: OpenCodeStreaming? = nil,
+        customAgentsDirectory: URL? = nil
     ) {
         self.registry = registry
         self.workspaceDirectory = workingDirectory
@@ -54,6 +59,7 @@ public final class WorkspaceController {
         self.conversationStore = conversationStore
         self.openCodeStreamer = openCodeStreamer
         self.dismissedRecentIDs = Set(restoreDismissedRecents ?? [])
+        self.customAgentsDirectory = customAgentsDirectory
         // 在两段式初始化的第一阶段无法用 self.openCodeStreamer，用局部值注入到本次构造的会话里。
         let streamer = openCodeStreamer
 
@@ -121,13 +127,36 @@ public final class WorkspaceController {
         self.registryMessage = Self.message(for: registry)
         for session in sessions { attach(to: session) }
         refreshRecents()
+        if let customAgentsDirectory {
+            configWatcher = AgentConfigWatcher(directory: customAgentsDirectory) { [weak self] in
+                self?.reloadAgentRegistry()
+            }
+        }
+    }
+
+    /// 生产环境的自定义 agent 配置目录（~/Library/Application Support/AgentDeck/Agents）。
+    public static func defaultCustomAgentsDirectory() -> URL {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first ?? FileManager.default.homeDirectoryForCurrentUser
+        return support
+            .appending(path: "AgentDeck", directoryHint: .isDirectory)
+            .appending(path: "Agents", directoryHint: .isDirectory)
+    }
+
+    /// 重载 agent 注册表（#30 热加载/设置页手动触发）。
+    /// 已打开的会话各自持有 AgentConfig 快照不受影响；「Add Agent」菜单与设置页立即反映新配置。
+    public func reloadAgentRegistry() {
+        guard let customAgentsDirectory else { return }
+        registry = AgentRegistry.load(customDirectory: customAgentsDirectory)
+        registryMessage = Self.message(for: registry)
     }
 
     /// 从持久化快照恢复工作区（活动标签 + 聊天记录 + 最近工作目录）。
     public convenience init(
         registry: AgentRegistry,
         store: SessionStore,
-        openCodeStreamer: OpenCodeStreaming? = nil
+        openCodeStreamer: OpenCodeStreaming? = nil,
+        customAgentsDirectory: URL? = nil
     ) {
         let snapshot = (try? store.loadSnapshot()) ?? .default
         let workspace = snapshot.recentWorkspace.map { URL(filePath: $0) }
@@ -139,7 +168,8 @@ public final class WorkspaceController {
             restoreAgentIDs: snapshot.activeAgentIDs,
             restoreSessions: snapshot.activeSessions,
             restoreDismissedRecents: snapshot.dismissedRecents,
-            openCodeStreamer: openCodeStreamer
+            openCodeStreamer: openCodeStreamer,
+            customAgentsDirectory: customAgentsDirectory
         )
     }
 
@@ -231,18 +261,16 @@ public final class WorkspaceController {
     }
 
     public convenience init() {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
-            .first ?? FileManager.default.homeDirectoryForCurrentUser
-        let customDirectory = support
-            .appending(path: "AgentDeck", directoryHint: .isDirectory)
-            .appending(path: "Agents", directoryHint: .isDirectory)
+        let customDirectory = Self.defaultCustomAgentsDirectory()
 
         // load 永不抛错：坏配置已被跳过并记录在 registry.warnings 中。
-        // 生产入口：注入真实 opencode 流式客户端（测试走带 registry 的 init，默认 nil → 非流式）。
+        // 生产入口：注入真实 opencode 流式客户端（测试走带 registry 的 init，默认 nil → 非流式），
+        // 并传入配置目录以启用热加载（#30）。
         self.init(
             registry: AgentRegistry.load(customDirectory: customDirectory),
             store: SessionStore(),
-            openCodeStreamer: OpenCodeStreamingClient.shared
+            openCodeStreamer: OpenCodeStreamingClient.shared,
+            customAgentsDirectory: customDirectory
         )
     }
 

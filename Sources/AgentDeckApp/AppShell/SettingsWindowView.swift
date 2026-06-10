@@ -221,7 +221,17 @@ struct SettingsWindowView: View {
 
     private var detectedAgentsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("已检测到的 Agents").font(headlineFont)
+            HStack {
+                Text("已检测到的 Agents").font(headlineFont)
+                Spacer()
+                // 目录改动会自动热加载(#30);按钮兜底手动触发。
+                Button("打开配置目录") {
+                    let directory = WorkspaceController.defaultCustomAgentsDirectory()
+                    try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                    NSWorkspace.shared.open(directory)
+                }
+                Button("重新加载") { workspace.reloadAgentRegistry() }
+            }
             if workspace.registry.agents.isEmpty {
                 Text("未检测到任何 agent。").font(bodyFont).foregroundStyle(.secondary)
             } else {
@@ -235,6 +245,12 @@ struct SettingsWindowView: View {
                     }
                     .padding(.vertical, 2)
                 }
+            }
+            // 配置问题逐条展示:致命(已跳过)与非致命(已加载但提醒)都在这里(#30)。
+            ForEach(workspace.registry.warnings, id: \.self) { warning in
+                Label(warning, systemImage: "exclamationmark.triangle")
+                    .font(captionFont)
+                    .foregroundStyle(.orange)
             }
         }
     }

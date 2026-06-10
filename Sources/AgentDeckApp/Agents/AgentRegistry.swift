@@ -17,7 +17,11 @@ public struct AgentRegistry: Equatable {
         executableResolver: (String) -> String? = AgentDetection.resolveExecutable(named:)
     ) -> AgentRegistry {
         let builtIns = builtInPresets(executableResolver: executableResolver)
-        let custom = loadCustomAgents(from: customDirectory, reservedIDs: Set(builtIns.map(\.id)))
+        let custom = loadCustomAgents(
+            from: customDirectory,
+            reservedIDs: Set(builtIns.map(\.id)),
+            executableResolver: executableResolver
+        )
         return AgentRegistry(agents: builtIns + custom.agents, warnings: custom.warnings)
     }
 
@@ -69,7 +73,8 @@ public struct AgentRegistry: Equatable {
     /// `reservedIDs` 用于让自定义 agent 不能覆盖内置 agent 的 id。
     public static func loadCustomAgents(
         from directory: URL,
-        reservedIDs: Set<String> = []
+        reservedIDs: Set<String> = [],
+        executableResolver: (String) -> String? = AgentDetection.resolveExecutable(named:)
     ) -> (agents: [AgentConfig], warnings: [String]) {
         guard FileManager.default.fileExists(atPath: directory.path) else {
             return ([], [])
@@ -101,6 +106,9 @@ public struct AgentRegistry: Equatable {
                     warnings.append("已跳过 \(file.lastPathComponent)：agent id「\(config.id)」与已有配置重复。")
                     continue
                 }
+                // 非致命问题照常加载,但逐条提醒(可执行缺失/env 键非法/固定目录不存在,#30)。
+                warnings.append(contentsOf: config.validationWarnings(executableResolver: executableResolver)
+                    .map { "\(file.lastPathComponent)（\(config.name)）：\($0)" })
                 agents.append(config)
             } catch {
                 warnings.append("已跳过 \(file.lastPathComponent)：\(String(describing: error))")
