@@ -10,6 +10,8 @@ public struct SessionUsage: Equatable, Codable, Sendable {
     public var costUSD = 0.0
     /// 已计量的轮数（每条 result 行一轮）。
     public var turns = 0
+    /// 计价货币符号（展示用）；nil 按 "$"。本地计价表补算时取规则的 currency（如 "¥"）。
+    public var currency: String?
 
     public init() {}
 
@@ -22,16 +24,22 @@ public struct SessionUsage: Equatable, Codable, Sendable {
         cacheCreationTokens += turn.cacheCreationTokens
         costUSD += turn.costUSD
         turns += 1
+        if let symbol = turn.costCurrency { currency = symbol }
+    }
+
+    /// 仅 token 的紧凑标签（无费用数据 / 单价未配时的常显内容）。
+    public var tokensLabel: String {
+        "↑\(Self.compact(inputTokens + cacheCreationTokens)) ↓\(Self.compact(outputTokens))"
     }
 
     /// 紧凑摘要：↑输入（含缓存写）/↓输出/费用，如 "↑12.3k ↓4.5k · $0.043"。
     public var compactSummary: String {
-        "↑\(Self.compact(inputTokens + cacheCreationTokens)) ↓\(Self.compact(outputTokens)) · \(costLabel)"
+        "\(tokensLabel) · \(costLabel)"
     }
 
-    /// 费用标签：≥$1 显示两位小数，更小显示三位（避免 "$0.00"）。
+    /// 费用标签：≥1 显示两位小数，更小显示三位（避免 "0.00"）。
     public var costLabel: String {
-        costUSD >= 0.995 ? String(format: "$%.2f", costUSD) : String(format: "$%.3f", costUSD)
+        (currency ?? "$") + String(format: costUSD >= 0.995 ? "%.2f" : "%.3f", costUSD)
     }
 
     static func compact(_ tokens: Int) -> String {
@@ -50,6 +58,8 @@ public struct TurnUsage: Equatable, Sendable {
     public var cacheReadTokens = 0
     public var cacheCreationTokens = 0
     public var costUSD = 0.0
+    /// 本轮计价货币（本地计价表补算时设置；CLI 报出的真实费用恒为 USD，保持 nil）。
+    public var costCurrency: String?
 
     public init() {}
 }

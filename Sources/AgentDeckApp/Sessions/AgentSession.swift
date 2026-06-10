@@ -681,7 +681,7 @@ public final class AgentSession: Identifiable {
                 switch event {
                 case .stdout(let chunk):
                     captureBackendSessionID(from: chunk)
-                    if let turn = usageCapture.consume(chunk) { usage.add(turn) }
+                    if let turn = usageCapture.consume(chunk) { recordTurnUsage(turn) }
                     pendingStdout += chunk
                     if pendingDrainTask == nil {
                         pendingDrainTask = Task { @MainActor in
@@ -707,7 +707,7 @@ public final class AgentSession: Identifiable {
             }
 
             flushBackendSessionCapture()
-            if let turn = usageCapture.flush() { usage.add(turn) }
+            if let turn = usageCapture.flush() { recordTurnUsage(turn) }
             for parsed in parser.flush() {
                 apply(parsed, assistantIndex: &assistantIndex, producedMessage: &producedMessage)
             }
@@ -1068,6 +1068,18 @@ public final class AgentSession: Identifiable {
 
     private func captureBackendSessionID(from chunk: String) {
         sessionContinuity.captureBackendSessionID(from: chunk, modelKey: currentBackendModelKey)
+    }
+
+    /// 记一轮用量：CLI 报不出费用（第三方/国产模型 total_cost_usd=0）时，
+    /// 按用户计价表（model-pricing.json）用真实 token 数本地补算（#28）。
+    private func recordTurnUsage(_ raw: TurnUsage) {
+        var turn = raw
+        if turn.costUSD == 0,
+           let rule = ModelPricing.rule(for: resolvedModel ?? model, in: ModelPricing.loadRules()) {
+            turn.costUSD = ModelPricing.cost(of: turn, rule: rule)
+            turn.costCurrency = rule.currency
+        }
+        usage.add(turn)
     }
 
     private func flushBackendSessionCapture() {

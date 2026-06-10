@@ -446,6 +446,9 @@ struct OpenCodeEventTranslator {
     private var rolesByMessageID: [String: String] = [:]
     /// 最近一次发出答案文本的 text part id：换到新的文本 part（如工具调用后的续写）时补换行，不黏连。
     private var lastEmittedTextPartID: String?
+    /// assistant message 的最新用量（cost USD + tokens，随 message.updated 滚动更新取终值；
+    /// 字段形状已在安装版 source map 核实）。结束时合成 claude result 同形行复用 UsageCapture（#28）。
+    private var usageByMessageID: [String: (cost: Double, input: Int, output: Int, cacheRead: Int, cacheWrite: Int)] = [:]
 
     init(sessionID: String, thinking: Bool) {
         self.sessionID = sessionID
@@ -463,6 +466,17 @@ struct OpenCodeEventTranslator {
                let id = info["id"] as? String,
                let role = info["role"] as? String {
                 rolesByMessageID[id] = role
+                if role == "assistant", let tokens = info["tokens"] as? [String: Any] {
+                    let cache = tokens["cache"] as? [String: Any] ?? [:]
+                    usageByMessageID[id] = (
+                        cost: (info["cost"] as? Double) ?? 0,
+                        input: Self.intValue(tokens["input"]),
+                        // reasoning 按输出计（计费口径一致）
+                        output: Self.intValue(tokens["output"]) + Self.intValue(tokens["reasoning"]),
+                        cacheRead: Self.intValue(cache["read"]),
+                        cacheWrite: Self.intValue(cache["write"])
+                    )
+                }
             }
             return OpenCodeEventTranslation()
 
@@ -497,6 +511,7 @@ struct OpenCodeEventTranslator {
             // 服务端给本会话的明确「生成结束」事件。
             var translation = OpenCodeEventTranslation()
             translation.finished = properties["sessionID"] as? String == sessionID
+            if translation.finished { translation.lines += usageResultLines() }
             return translation
 
         case "session.status":
@@ -504,6 +519,7 @@ struct OpenCodeEventTranslator {
             let status = properties["status"] as? [String: Any]
             var translation = OpenCodeEventTranslation()
             translation.finished = (status?["type"] as? String) == "idle"
+            if translation.finished { translation.lines += usageResultLines() }
             return translation
 
         case "permission.asked", "permission.updated":
@@ -572,6 +588,37 @@ struct OpenCodeEventTranslator {
         return OpenCodeEventTranslation(lines: [OpenCodeStreamWire.line([
             "type": "text", "sessionID": sessionID, "part": ["type": "text", "text": payload]
         ])])
+    }
+
+    /// 生成结束时把本轮全部 assistant 用量合成**一条**与 claude result 同形的 JSON 行，
+    /// 直接复用 AgentSession 的 UsageCapture 管线（#28）。发出即清空，避免重复计量。
+    private mutating func usageResultLines() -> [String] {
+        guard !usageByMessageID.isEmpty else { return [] }
+        var cost = 0.0
+        var input = 0, output = 0, cacheRead = 0, cacheWrite = 0
+        for usage in usageByMessageID.values {
+            cost += usage.cost
+            input += usage.input
+            output += usage.output
+            cacheRead += usage.cacheRead
+            cacheWrite += usage.cacheWrite
+        }
+        usageByMessageID = [:]
+        guard cost > 0 || input > 0 || output > 0 else { return [] }
+        return [OpenCodeStreamWire.line([
+            "type": "result",
+            "total_cost_usd": cost,
+            "usage": [
+                "input_tokens": input,
+                "output_tokens": output,
+                "cache_read_input_tokens": cacheRead,
+                "cache_creation_input_tokens": cacheWrite
+            ]
+        ])]
+    }
+
+    private static func intValue(_ value: Any?) -> Int {
+        (value as? Int) ?? (value as? Double).map(Int.init) ?? 0
     }
 
     /// 该 part 是否属于助手消息：优先按 message.updated 记录的 role；角色未知时用「助手 part 必有 time、

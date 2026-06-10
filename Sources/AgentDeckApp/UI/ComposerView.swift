@@ -392,8 +392,8 @@ struct ComposerView: View {
                 .progressViewStyle(.linear)
                 .frame(width: 74)
             if !session.usage.isEmpty {
-                // 累计费用常显（来自 claude result 的真实计量）；token 明细在悬停里。
-                Text(session.usage.costLabel)
+                // 有费用显费用；无费用（第三方模型未配计价表）退显真实 token 计数。明细在悬停里。
+                Text(session.usage.costUSD > 0 ? session.usage.costLabel : session.usage.tokensLabel)
                     .appFont(relative: -2)
                     .foregroundStyle(.secondary)
                     .fixedSize()

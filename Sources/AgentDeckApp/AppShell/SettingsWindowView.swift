@@ -137,6 +137,12 @@ struct SettingsWindowView: View {
                 EmptyView()
             }
 
+            settingRow("模型计价表", "第三方/国产模型（kimi、mimo、deepseek、qwen…）按此表用真实 token 数补算费用；CLI 报得出费用时优先用真实值。") {
+                Button("打开配置文件") {
+                    NSWorkspace.shared.open(ModelPricing.writeTemplateIfMissing())
+                }
+            }
+
             settingRow("界面主题", "整体明暗外观。") {
                 menuPicker(selection: $appThemeID, options: AppTheme.allCases)
             }

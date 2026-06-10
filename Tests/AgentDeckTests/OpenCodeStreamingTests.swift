@@ -495,6 +495,46 @@ final class OpenCodeStreamingTests: XCTestCase {
         XCTAssertGreaterThan(textChunks, 1, "应为多段增量(逐 token)，而非一次性整段；实测 \(textChunks) 段")
     }
 
+    // MARK: - 用量计费(#28)
+
+    func testTranslatorEmitsUsageResultLineOnIdle() {
+        var translator = OpenCodeEventTranslator(sessionID: "s", thinking: false)
+        let info: [String: Any] = [
+            "sessionID": "s", "id": "m1", "role": "assistant", "cost": 0.0123,
+            "tokens": ["input": 100, "output": 50, "reasoning": 5, "cache": ["read": 7, "write": 3]]
+        ]
+        _ = translator.translate(["type": "message.updated", "properties": ["info": info]])
+
+        let idle = translator.translate(["type": "session.idle", "properties": ["sessionID": "s"]])
+        XCTAssertTrue(idle.finished)
+        XCTAssertEqual(idle.lines.count, 1)
+        let turn = UsageCapture.turnUsage(fromJSONLine: idle.lines.first ?? "")
+        XCTAssertEqual(turn?.inputTokens, 100)
+        XCTAssertEqual(turn?.outputTokens, 55, "reasoning 计入输出")
+        XCTAssertEqual(turn?.cacheReadTokens, 7)
+        XCTAssertEqual(turn?.cacheCreationTokens, 3)
+        XCTAssertEqual(turn?.costUSD ?? 0, 0.0123, accuracy: 0.000_001)
+
+        let again = translator.translate(["type": "session.idle", "properties": ["sessionID": "s"]])
+        XCTAssertTrue(again.lines.isEmpty, "发出即清空,不重复计量")
+    }
+
+    func testTranslatorIgnoresUserMessageUsageAndOtherSessions() {
+        var translator = OpenCodeEventTranslator(sessionID: "s", thinking: false)
+        let userInfo: [String: Any] = [
+            "sessionID": "s", "id": "u1", "role": "user",
+            "cost": 9.9, "tokens": ["input": 1, "output": 1, "reasoning": 0]
+        ]
+        let foreignInfo: [String: Any] = [
+            "sessionID": "other", "id": "m9", "role": "assistant",
+            "cost": 9.9, "tokens": ["input": 1, "output": 1, "reasoning": 0]
+        ]
+        _ = translator.translate(["type": "message.updated", "properties": ["info": userInfo]])
+        _ = translator.translate(["type": "message.updated", "properties": ["info": foreignInfo]])
+        let idle = translator.translate(["type": "session.idle", "properties": ["sessionID": "s"]])
+        XCTAssertTrue(idle.lines.isEmpty)
+    }
+
     // MARK: - 测试夹具
 
     static func openCodeConfig() -> AgentConfig {
