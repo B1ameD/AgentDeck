@@ -49,10 +49,8 @@ test_script.py
 fix_plan.md
 *.log
 
-# Project-specific docs (not for repo)
-AGENTDECK_DIFF_REVIEW_FIX_PLAN.md
-AGENTDECK_KNOWN_BUGS_HANDOFF.md
-CHANGELOG-SESSION.md
+# Archived handoff docs (kept locally, not for repo)
+docs/archive/
 
 # Superpowers
 .superpowers/
