@@ -2,80 +2,71 @@ import XCTest
 @testable import AgentDeckApp
 
 final class TranscriptWindowTests: XCTestCase {
-    func testTailWindowShortTranscriptFullyVisible() {
-        let window = TranscriptWindow.tail(totalCount: 5)
-        XCTAssertEqual(window, .init(start: 0, end: 5))
-        XCTAssertEqual(window.hiddenAbove, 0)
-        XCTAssertEqual(window.hiddenBelow(totalCount: 5), 0)
+    // 50 行 × 高 100、行距 10:总高 = 50×100 + 49×10 = 5490
+    private let uniform = [CGFloat](repeating: 100, count: 50)
+
+    func testVirtualLayoutPicksRowsAroundViewport() {
+        // 视口 [2000, 2500),margin 900 → 渲染窗 [1100, 3400)
+        let layout = TranscriptWindow.virtualLayout(rowHeights: uniform, offset: 2000, viewportHeight: 500)
+        XCTAssertEqual(layout.range, 10..<31, "行 i 起点 i×110:首个尾端>1100 的是 10,最后起点<3400 的是 30")
+        XCTAssertEqual(layout.topInset, 10 * 100 + 9 * 10, "顶替 rows[0..<10] 含内部行距")
+        XCTAssertEqual(layout.bottomInset, 19 * 100 + 18 * 10, "顶替 rows[31...] 含内部行距")
     }
 
-    func testTailWindowLongTranscriptShowsOnlyTail() {
-        let window = TranscriptWindow.tail(totalCount: 389)
-        XCTAssertEqual(window, .init(start: 309, end: 389), "可见区=最近 \(TranscriptWindow.windowSize) 条")
-        XCTAssertEqual(window.hiddenAbove, 309)
+    func testVirtualLayoutHeightInvariant() {
+        // 占位 + 真身 + VStack 行距还原出完整内容高度(滚动条对应完整历史的关键)
+        let layout = TranscriptWindow.virtualLayout(rowHeights: uniform, offset: 2000, viewportHeight: 500)
+        let renderedHeights = uniform[layout.range].reduce(0, +)
+        let gapCount = CGFloat(layout.range.count - 1) // 真身行之间
+            + (layout.topInset > 0 ? 1 : 0)            // 顶占位—首行
+            + (layout.bottomInset > 0 ? 1 : 0)         // 末行—底占位
+        let total = layout.topInset + layout.bottomInset + renderedHeights + gapCount * TranscriptWindow.rowSpacing
+        XCTAssertEqual(total, 50 * 100 + 49 * 10)
     }
 
-    func testSlidUpMovesBothEdgesAndKeepsSize() {
-        let slid = TranscriptWindow.slidUp(.init(start: 300, end: 380), totalCount: 389)
-        XCTAssertEqual(slid, .init(start: 290, end: 370), "顶部放出一批、底部回收一批,渲染量不变")
+    func testVirtualLayoutAtTopAndBottomEdges() {
+        let top = TranscriptWindow.virtualLayout(rowHeights: uniform, offset: 0, viewportHeight: 500)
+        XCTAssertEqual(top.range.lowerBound, 0)
+        XCTAssertEqual(top.topInset, 0)
+        XCTAssertGreaterThan(top.bottomInset, 0)
+
+        let bottom = TranscriptWindow.virtualLayout(rowHeights: uniform, offset: 5490 - 500, viewportHeight: 500)
+        XCTAssertEqual(bottom.range.upperBound, 50)
+        XCTAssertEqual(bottom.bottomInset, 0)
+        XCTAssertGreaterThan(bottom.topInset, 0)
     }
 
-    func testSlidUpClampsAtStart() {
-        let slid = TranscriptWindow.slidUp(.init(start: 5, end: 85), totalCount: 389)
-        XCTAssertEqual(slid, .init(start: 0, end: 80))
-        let again = TranscriptWindow.slidUp(slid, totalCount: 389)
-        XCTAssertEqual(again, slid, "到顶后不再移动")
+    func testVirtualLayoutSmallListFullyRendered() {
+        // margin 900 远大于内容 → 全量真身、零占位
+        let heights: [CGFloat] = [50, 80, 120]
+        let layout = TranscriptWindow.virtualLayout(rowHeights: heights, offset: 0, viewportHeight: 400)
+        XCTAssertEqual(layout.range, 0..<3)
+        XCTAssertEqual(layout.topInset, 0)
+        XCTAssertEqual(layout.bottomInset, 0)
     }
 
-    func testSlidDownMirrorsAndClampsAtTotal() {
-        let slid = TranscriptWindow.slidDown(.init(start: 100, end: 180), totalCount: 389)
-        XCTAssertEqual(slid, .init(start: 110, end: 190), "底部放出、顶部回收")
-        let nearEnd = TranscriptWindow.slidDown(.init(start: 305, end: 385), totalCount: 389)
-        XCTAssertEqual(nearEnd, .init(start: 309, end: 389), "封顶尾部并保持窗口大小")
+    func testVirtualLayoutDegenerateInputs() {
+        let empty = TranscriptWindow.virtualLayout(rowHeights: [], offset: 0, viewportHeight: 500)
+        XCTAssertEqual(empty.range, 0..<0)
+
+        // 瞬态过滚(offset 超出内容):兜底渲染末行,不崩、不空区间
+        let overscrolled = TranscriptWindow.virtualLayout(rowHeights: uniform, offset: 99999, viewportHeight: 500)
+        XCTAssertFalse(overscrolled.range.isEmpty)
+        XCTAssertEqual(overscrolled.range.upperBound, 50)
     }
 
-    func testAfterCountChangeFollowsTailWhenPinned() {
-        // 贴尾(end==旧总数):新消息到来 → 窗口跟随新尾部
-        let followed = TranscriptWindow.afterCountChange(.init(start: 20, end: 100), oldCount: 100, newCount: 101)
-        XCTAssertEqual(followed, TranscriptWindow.tail(totalCount: 101))
+    func testEstimatedRowHeightScalesWithText() {
+        let oneLine = TranscriptWindow.estimatedRowHeight(characterCount: 10, newlineCount: 0)
+        XCTAssertEqual(oneLine, 21 + 24, "单行 = 行高 + 气泡 padding")
+        let multiLine = TranscriptWindow.estimatedRowHeight(characterCount: 10, newlineCount: 4)
+        XCTAssertEqual(multiLine, 5 * 21 + 24, "换行符决定行数")
+        let wrapped = TranscriptWindow.estimatedRowHeight(characterCount: 400, newlineCount: 0)
+        XCTAssertEqual(wrapped, 5 * 21 + 24, "无换行时按 ~80 字/行折行")
+        let huge = TranscriptWindow.estimatedRowHeight(characterCount: 1_000_000, newlineCount: 9999)
+        XCTAssertEqual(huge, 60 * 21 + 24, "封顶 60 行")
     }
 
-    func testAfterCountChangeStaysPutWhileBrowsingHistory() {
-        // 翻历史中(窗口脱尾):新消息落在窗口外,渲染量不变
-        let stayed = TranscriptWindow.afterCountChange(.init(start: 10, end: 90), oldCount: 200, newCount: 201)
-        XCTAssertEqual(stayed, .init(start: 10, end: 90))
-    }
-
-    func testAfterCountChangeResetsOnShrink() {
-        // 清空/重建(总数变小) → 重置为尾部
-        let reset = TranscriptWindow.afterCountChange(.init(start: 10, end: 90), oldCount: 200, newCount: 0)
-        XCTAssertEqual(reset, .init(start: 0, end: 0))
-    }
-
-    func testResolvedFallsBackToTailForInvalidWindows() {
-        XCTAssertEqual(
-            TranscriptWindow.resolved(.init(start: 0, end: 0), totalCount: 200),
-            TranscriptWindow.tail(totalCount: 200),
-            "未初始化 → 尾部"
-        )
-        XCTAssertEqual(
-            TranscriptWindow.resolved(.init(start: 100, end: 300), totalCount: 200),
-            TranscriptWindow.tail(totalCount: 200),
-            "越界(切会话残留) → 尾部"
-        )
-        XCTAssertEqual(
-            TranscriptWindow.resolved(.init(start: 10, end: 90), totalCount: 200),
-            .init(start: 10, end: 90),
-            "合法窗口原样保留"
-        )
-    }
-
-    func testFullWindowCoversEverything() {
-        // 「历史会话全部展开」开关:全量渲染、零隐藏
-        let full = TranscriptWindow.full(totalCount: 389)
-        XCTAssertEqual(full, .init(start: 0, end: 389))
-        XCTAssertEqual(full.hiddenAbove, 0)
-        XCTAssertEqual(full.hiddenBelow(totalCount: 389), 0)
-        XCTAssertFalse(TranscriptWindow.expandAllDefault, "默认仍走浮动窗口")
+    func testExpandAllDefaultsOff() {
+        XCTAssertFalse(TranscriptWindow.expandAllDefault, "默认走占位虚拟化")
     }
 }

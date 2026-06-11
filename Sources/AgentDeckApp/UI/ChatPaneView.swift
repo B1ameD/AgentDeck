@@ -7,18 +7,19 @@ private struct ChatBottomVisibleKey: PreferenceKey {
     static func reduce(value: inout Bool, nextValue: () -> Bool) { value = nextValue() }
 }
 
-/// 窗口顶部哨兵在视口坐标系里的 maxY（负值=在视口上方多远）。
-/// 用连续数值而非布尔：滚动中每帧变化都触发 onPreferenceChange，自动释放才能连续推进。
-private struct ChatTopDistanceKey: PreferenceKey {
-    static let defaultValue: CGFloat = -.greatestFiniteMagnitude
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+/// 转录内容顶部相对视口顶的滚动偏移（≥0＝已向下滚多少）。占位虚拟化据此算可见行区间。
+private struct ChatContentOffsetKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
 
-/// 窗口底部哨兵在视口坐标系里的 minY（减视口高=距视口下沿多远）。
-/// 浮动窗口与顶部哨兵镜像：下滑接近窗口底时把窗口下移一批。
-private struct ChatWindowBottomDistanceKey: PreferenceKey {
-    static let defaultValue: CGFloat = .greatestFiniteMagnitude
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = min(value, nextValue()) }
+/// 真身渲染中的各行实测高度（消息 id → 高度）。回填进测量表后，
+/// 该消息滚出视口改用**精确等高**占位——占位⇄真身切换不再引起跳动。
+private struct RowHeightsKey: PreferenceKey {
+    static let defaultValue: [ChatMessage.ID: CGFloat] = [:]
+    static func reduce(value: inout [ChatMessage.ID: CGFloat], nextValue: () -> [ChatMessage.ID: CGFloat]) {
+        value.merge(nextValue()) { _, new in new }
+    }
 }
 
 /// 聊天框（底部 safeAreaInset）的实时高度。多行输入会把它撑高，
@@ -43,12 +44,20 @@ struct ChatPaneView: View {
     /// 用户当前是否处于（接近）聊天底部。只有「本就在底部」时，侧栏开合才把视图保持贴底；
     /// 若在上翻看历史，则不打扰其位置。避免之前「一开侧栏就强行滚到底」的突兀观感。
     @State private var atBottom = true
-    /// 浮动渲染窗口：只渲染视口附近 ~80 条（#2 首帧性能——否则要测量全部气泡高度，
-    /// 每条都是一次完整 TextKit 布局）。滚动接近窗口顶/底时窗口跟随滑动，渲染量全程有界。
-    /// (0,0) 表示未初始化，由 TranscriptWindow.resolved 回落到尾部窗口。
-    @State private var window = TranscriptWindow.Window(start: 0, end: 0)
-    /// 自动释放冷却：让上一批的 TextKit 布局先落定，避免连续触发把滚动卡死。
-    @State private var lastAutoRelease = Date.distantPast
+    /// 占位虚拟化布局（真实渲染区间+上下占位高度）。由滚动偏移/实测高度变化驱动更新；
+    /// range 为空＝未初始化，resolvedLayout 回落到尾部兜底。
+    @State private var virtualLayout = TranscriptWindow.VirtualLayout(range: 0..<0, topInset: 0, bottomInset: 0)
+    /// 实测行高（渲染过即记录）：占位与滚动度量用精确值，占位⇄真身切换高度无损。
+    @State private var measuredHeights: [ChatMessage.ID: CGFloat] = [:]
+    /// 未渲染过消息的估算行高缓存（按字数失效，流式增长时跟随更新）。
+    @State private var rowEstimates: [ChatMessage.ID: RowEstimate] = [:]
+    /// 最近一次上报的滚动偏移（高度/条数变化时用它重算布局）。
+    @State private var lastOffset: CGFloat = 0
+
+    private struct RowEstimate: Equatable {
+        var chars: Int
+        var height: CGFloat
+    }
     /// 聊天框当前高度（随输入行数变化）。用于在它长高/收缩时把贴底的视图重新钉底（#3）。
     @State private var composerHeight: CGFloat = 0
     /// 设置项：历史会话默认全部展开（不做尾部窗口截断）。
@@ -62,19 +71,12 @@ struct ChatPaneView: View {
         ScrollViewReader { proxy in
         GeometryReader { outer in
         ScrollView {
-            // 注意是**急切** VStack:可见消息已被 TranscriptWindow 截到浮动窗口(~80 条),
-            // 全部气泡高度一次定型——LazyVStack 在上滑时才物化上方气泡,NSTextView 真实高度
-            // 迟到会顶得内容跳动(「浮现移动」),而窗口化后急切渲染的成本是有界的。
-            VStack(alignment: .leading, spacing: 10) {
-                if effectiveWindow.hiddenAbove > 0 {
-                    // 顶部哨兵：上报与视口的距离，接近时窗口上移一批（顶部放出、底部回收）。
-                    Color.clear.frame(height: 1)
-                        .background(GeometryReader { top in
-                            Color.clear.preference(
-                                key: ChatTopDistanceKey.self,
-                                value: top.frame(in: .named(Self.scrollSpace)).maxY
-                            )
-                        })
+            // 注意是**急切** VStack:占位虚拟化只让视口附近的消息走真身渲染,
+            // 其余是等高 Color.clear——滚动度量对应完整历史,渲染成本全程有界。
+            VStack(alignment: .leading, spacing: TranscriptWindow.rowSpacing) {
+                if resolvedLayout.topInset > 0 {
+                    // 顶部占位：顶替 range 之前所有行(含行距)的总高,滚动条因此对应完整历史。
+                    Color.clear.frame(height: resolvedLayout.topInset)
                 }
                 ForEach(visibleMessages) { message in
                     MessageBubble(
@@ -110,23 +112,17 @@ struct ChatPaneView: View {
                         },
                         onShowSubagent: onShowSubagent
                     )
+                        .background(rowHeightReader(message.id))
                         .transition(.asymmetric(
                             insertion: .opacity.combined(with: .offset(y: 8)),
                             removal: .opacity
                         ))
                 }
-                if effectiveWindow.hiddenBelow(totalCount: session.messages.count) > 0 {
-                    // 底部哨兵（与顶部镜像）：下滑接近窗口底时窗口下移一批（底部放出、顶部回收）。
-                    Color.clear.frame(height: 1)
-                        .background(GeometryReader { bottom in
-                            Color.clear.preference(
-                                key: ChatWindowBottomDistanceKey.self,
-                                value: bottom.frame(in: .named(Self.scrollSpace)).minY
-                            )
-                        })
+                if resolvedLayout.bottomInset > 0 {
+                    // 底部占位（镜像）：顶替 range 之后所有行的总高。
+                    Color.clear.frame(height: resolvedLayout.bottomInset)
                 }
-                // 思考指示器只在窗口贴尾时显示——窗口脱离尾部时它会错位在历史中间。
-                if shouldShowThinkingIndicator && effectiveWindow.end == session.messages.count {
+                if shouldShowThinkingIndicator {
                     ThinkingIndicatorBubble()
                         .transition(.asymmetric(
                             insertion: .opacity.combined(with: .offset(y: 8)),
@@ -143,6 +139,13 @@ struct ChatPaneView: View {
                         )
                     })
             }
+            // 滚动偏移上报：内容(VStack)顶相对视口顶滚过的距离,驱动虚拟化区间重算。
+            .background(GeometryReader { content in
+                Color.clear.preference(
+                    key: ChatContentOffsetKey.self,
+                    value: -content.frame(in: .named(Self.scrollSpace)).minY
+                )
+            })
             .padding(18)
             .animation(.spring(response: 0.34, dampingFraction: 0.86), value: session.messages.count)
             .animation(.spring(response: 0.34, dampingFraction: 0.86), value: shouldShowThinkingIndicator)
@@ -152,37 +155,47 @@ struct ChatPaneView: View {
         .defaultScrollAnchor(.bottom)
         // 进入/切换不同会话时重建滚动视图，确保每次点进都从最新（底部）开始，而非上次的位置。
         .id(session.id)
-        // 切换会话时收回窗口到尾部（@State 不随上面的 .id 重建）。
+        // 切换会话时重置虚拟化状态（@State 不随上面的 .id 重建）。
         .onChange(of: session.id) { _, _ in
-            window = TranscriptWindow.tail(totalCount: session.messages.count)
+            measuredHeights = [:]
+            rowEstimates = [:]
+            virtualLayout = TranscriptWindow.VirtualLayout(range: 0..<0, topInset: 0, bottomInset: 0)
         }
-        // 消息总数变化：贴尾则窗口跟随新尾部；翻历史中则不动（新消息落在窗口外，渲染量不变）；
-        // 自己发消息一律跳回尾部并钉底（消息在窗口外时用户会以为没发出去）。
+        // 消息总数变化：自己发消息时跳到底（消息可能在视口外，用户会以为没发出去）；
+        // 其余情况重算布局即可——翻历史中新消息只是底部占位变高，零打扰。
         .onChange(of: session.messages.count) { oldCount, newCount in
             if newCount > oldCount, session.messages.last?.role == .user {
-                window = TranscriptWindow.tail(totalCount: newCount)
                 pinAfterReflow(proxy, to: Self.bottomAnchorID, anchor: .bottom)
-            } else {
-                window = TranscriptWindow.afterCountChange(window, oldCount: oldCount, newCount: newCount)
             }
+            updateVirtualLayout(offset: lastOffset, viewport: outer.size.height)
         }
         .onPreferenceChange(ChatBottomVisibleKey.self) { atBottom = $0 }
-        // 上滑几乎到窗口顶 → 窗口上移一批。注意 defaultScrollAnchor(.bottom)
-        // 只在贴底时保持距底偏移；翻历史时保持的是「距顶偏移」，滑动后必须把原首条
-        // 钉回视口顶（见 slideWindowUp），否则视口压进新内容会连锁触发。
-        .onPreferenceChange(ChatTopDistanceKey.self) { distance in
-            guard distance > -TranscriptWindow.releaseDistance else { return }
-            slideWindowUp(proxy)
+        // 滚动偏移变化 → 重算真身渲染区间。无 scrollTo、无冷却:滚动手感与原生一致,
+        // 只是滚远的行悄悄换成等高占位、滚近的行换回真身。
+        .onPreferenceChange(ChatContentOffsetKey.self) { offset in
+            lastOffset = offset
+            updateVirtualLayout(offset: offset, viewport: outer.size.height)
         }
-        // 下滑接近窗口底 → 窗口下移一批（镜像）：把原末条钉回视口底，抵消底部增长的视口下坠。
-        .onPreferenceChange(ChatWindowBottomDistanceKey.self) { minY in
-            guard minY - outer.size.height < TranscriptWindow.releaseDistance else { return }
-            slideWindowDown(proxy)
+        // 真身行实测高度回填:此后该行的占位用精确值,占位⇄真身切换高度无损。
+        .onPreferenceChange(RowHeightsKey.self) { reported in
+            var changed = false
+            for (id, height) in reported where measuredHeights[id] != height {
+                measuredHeights[id] = height
+                changed = true
+            }
+            if changed { updateVirtualLayout(offset: lastOffset, viewport: outer.size.height) }
         }
         // 侧栏开/合会改列宽并重排聊天：仅当本就贴底时，逐帧把视图保持贴底（无动画，故不会上下乱滚）。
         .onChange(of: sidebarVisible) { _, _ in keepPinnedToBottomIfNeeded(proxy) }
-        // 窗口缩放（尤其改高度）同理：视口变小时若不重锚，底部最新消息会被推出可视区（内容“不可见”）。
-        .onChange(of: outer.size) { _, _ in keepPinnedToBottomIfNeeded(proxy) }
+        // 窗口缩放：视口变小时若不重锚,底部最新消息会被推出可视区;列宽变化时旧实测高度
+        // 全部失效(换行变了),清掉等真身重新回填。
+        .onChange(of: outer.size) { oldSize, newSize in
+            if oldSize.width != newSize.width {
+                measuredHeights = [:]
+                updateVirtualLayout(offset: lastOffset, viewport: newSize.height)
+            }
+            keepPinnedToBottomIfNeeded(proxy)
+        }
         // 菜单打开时，聊天区覆盖一层透明遮罩：点击列表外即关闭菜单。
         .overlay {
             if composerMenuOpen {
@@ -235,56 +248,66 @@ struct ChatPaneView: View {
         }
     }
 
-    /// 当前生效的渲染窗口：「全部展开」直接全量；否则把 @State 窗口落到当前消息数组上
-    /// （未初始化/越界回落尾部）。
-    private var effectiveWindow: TranscriptWindow.Window {
-        let total = session.messages.count
-        if expandAllHistory { return TranscriptWindow.full(totalCount: total) }
-        return TranscriptWindow.resolved(window, totalCount: total)
+    /// 当前生效的虚拟化布局：「全部展开」全量真身；否则用 @State 布局并对当前消息数组
+    /// 夹紧（未初始化/越界回落到尾部兜底，下一次 offset 上报即精确化）。
+    private var resolvedLayout: TranscriptWindow.VirtualLayout {
+        let count = session.messages.count
+        if expandAllHistory {
+            return TranscriptWindow.VirtualLayout(range: 0..<count, topInset: 0, bottomInset: 0)
+        }
+        let layout = virtualLayout
+        guard !layout.range.isEmpty, layout.range.upperBound <= count else {
+            let lo = max(0, count - TranscriptWindow.initialRowCount)
+            // 兜底 topInset 用粗略行高,首帧定位即可;offset 一上报就被精确布局替换。
+            return TranscriptWindow.VirtualLayout(
+                range: lo..<count,
+                topInset: lo > 0 ? CGFloat(lo) * 72 : 0,
+                bottomInset: 0
+            )
+        }
+        return layout
     }
 
     private var visibleMessages: ArraySlice<ChatMessage> {
-        let visible = effectiveWindow
-        return session.messages[visible.start..<visible.end]
+        session.messages[resolvedLayout.range]
     }
 
-    /// 窗口上移一批（顶部放出、底部回收），并把滑动前的首条消息**无动画钉回视口顶**——
-    /// 新批次留在视口上方等用户继续上滑，而不是让视口滑进新内容（那会连锁触发）。
-    private func slideWindowUp(_ proxy: ScrollViewProxy) {
+    /// 重算虚拟化布局：行高取「实测优先,否则按字数估算(缓存,字数变了才重算)」。
+    private func updateVirtualLayout(offset: CGFloat, viewport: CGFloat) {
         guard !expandAllHistory else { return }
-        let current = effectiveWindow
-        guard current.hiddenAbove > 0, takeSlideCooldown() else { return }
-        let anchorID = visibleMessages.first?.id
-        window = TranscriptWindow.slidUp(current, totalCount: session.messages.count)
-        guard let anchorID else { return }
-        pinAfterReflow(proxy, to: anchorID, anchor: .top)
+        let messages = session.messages
+        var heights = [CGFloat]()
+        heights.reserveCapacity(messages.count)
+        for message in messages {
+            if let measured = measuredHeights[message.id] {
+                heights.append(measured)
+                continue
+            }
+            let chars = message.text.count
+            if let cached = rowEstimates[message.id], cached.chars == chars {
+                heights.append(cached.height)
+                continue
+            }
+            let newlines = message.text.reduce(into: 0) { if $1 == "\n" { $0 += 1 } }
+            let estimate = TranscriptWindow.estimatedRowHeight(characterCount: chars, newlineCount: newlines)
+            rowEstimates[message.id] = RowEstimate(chars: chars, height: estimate)
+            heights.append(estimate)
+        }
+        let layout = TranscriptWindow.virtualLayout(rowHeights: heights, offset: offset, viewportHeight: viewport)
+        if layout != virtualLayout { virtualLayout = layout }
     }
 
-    /// 窗口下移一批（底部放出、顶部回收，镜像）：把滑动前的末条消息钉回视口底，
-    /// 抵消 defaultScrollAnchor 在近底时跟随新内容的下坠（否则会连锁触发直到尾部）。
-    private func slideWindowDown(_ proxy: ScrollViewProxy) {
-        guard !expandAllHistory else { return }
-        let total = session.messages.count
-        let current = effectiveWindow
-        guard current.hiddenBelow(totalCount: total) > 0, takeSlideCooldown() else { return }
-        let anchorID = visibleMessages.last?.id
-        window = TranscriptWindow.slidDown(current, totalCount: total)
-        guard let anchorID else { return }
-        pinAfterReflow(proxy, to: anchorID, anchor: .bottom)
+    /// 真身行的高度上报（背景测量,不影响布局）。
+    private func rowHeightReader(_ id: ChatMessage.ID) -> some View {
+        GeometryReader { geo in
+            Color.clear.preference(key: RowHeightsKey.self, value: [id: geo.size.height])
+        }
     }
 
-    /// 滑动冷却（两方向共享，250ms）：让上一批 TextKit 布局先落定，避免连续触发把滚动卡死。
-    private func takeSlideCooldown() -> Bool {
-        let now = Date()
-        guard now.timeIntervalSince(lastAutoRelease) > 0.25 else { return false }
-        lastAutoRelease = now
-        return true
-    }
-
-    /// 仅当用户贴底**且窗口在尾部**时把视图重新钉底（侧栏开合/窗口缩放/聊天框高度变化共用）。
-    /// 关键：无动画 scrollTo——内容重排时底部始终被钉住；翻历史（窗口脱尾）时完全不打扰。
+    /// 仅当用户本就贴底时把视图重新钉底（侧栏开合/窗口缩放/聊天框高度变化共用）。
+    /// 关键：无动画 scrollTo——内容重排时底部始终被钉住；翻历史时完全不打扰。
     private func keepPinnedToBottomIfNeeded(_ proxy: ScrollViewProxy) {
-        guard atBottom, effectiveWindow.hiddenBelow(totalCount: session.messages.count) == 0 else { return }
+        guard atBottom else { return }
         pinAfterReflow(proxy, to: Self.bottomAnchorID, anchor: .bottom)
     }
 
