@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 
@@ -60,6 +61,8 @@ public final class WorkspaceController {
         self.openCodeStreamer = openCodeStreamer
         self.dismissedRecentIDs = Set(restoreDismissedRecents ?? [])
         self.customAgentsDirectory = customAgentsDirectory
+        // #32：退出前同步排空写盘队列——save 后台异步落盘，发完消息立即 Cmd-Q 会丢最后一轮转录。
+        conversationStore.installTerminationFlush(on: NSApplication.willTerminateNotification)
         // 在两段式初始化的第一阶段无法用 self.openCodeStreamer，用局部值注入到本次构造的会话里。
         let streamer = openCodeStreamer
 

@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// 一段落盘的会话转录。
 public struct StoredConversation: Codable, Equatable, Sendable, Identifiable {
@@ -159,6 +160,7 @@ public struct ConversationSummary: Codable, Equatable, Sendable, Identifiable {
 public final class ConversationStore: @unchecked Sendable {
     public let directory: URL
     private static let indexFilename = "index.json"
+    private static let log = Logger(subsystem: "AgentDeck", category: "conversation-store")
     private let ioQueue = DispatchQueue(label: "agentdeck.conversation-io", qos: .utility)
     private let lock = NSLock()
     /// 摘要缓存：nil＝尚未加载（首次访问时从 index.json 载入或重建）。
@@ -180,11 +182,26 @@ public final class ConversationStore: @unchecked Sendable {
         let directory = directory
         let indexURL = indexURL
         ioQueue.async {
-            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            if let data = try? JSONEncoder().encode(conversation) {
-                try? data.write(to: target, options: .atomic)
+            do {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                let data = try JSONEncoder().encode(conversation)
+                try data.write(to: target, options: .atomic)
+            } catch {
+                // 数据文件没写成（磁盘满/权限等）：跳过索引更新，保持盘上索引与盘上数据一致，
+                // 避免重启后 Recent 出现一条点开为空的会话（#33）。
+                Self.log.error("会话写盘失败：\(target.lastPathComponent, privacy: .public) — \(error.localizedDescription, privacy: .public)")
+                return
             }
             Self.writeIndex(indexSnapshot, to: indexURL)
+        }
+    }
+
+    /// 注册「进程退出前同步排空写盘队列」（#32）：willTerminate 之后不再回到 runloop，
+    /// ioQueue 上未完成的 save 会随进程终止而丢；在通知线程上同步等它们落定。
+    /// 通知名由调用方传入（生产传 NSApplication.willTerminateNotification），存储层不依赖 AppKit。
+    public func installTerminationFlush(on name: Notification.Name, center: NotificationCenter = .default) {
+        _ = center.addObserver(forName: name, object: nil, queue: nil) { [weak self] _ in
+            self?.waitForPendingWrites()
         }
     }
 
@@ -219,7 +236,13 @@ public final class ConversationStore: @unchecked Sendable {
         let url = fileURL(for: id)
         let indexURL = indexURL
         ioQueue.async {
-            try? FileManager.default.removeItem(at: url)
+            do {
+                try FileManager.default.removeItem(at: url)
+            } catch {
+                // 文件删不掉也照常更新索引：索引少一条最多是 Recent 不显示，仍可被历史检索兜底；
+                // 反之索引留着会指向用户已明确删除的会话。
+                Self.log.error("会话文件删除失败：\(url.lastPathComponent, privacy: .public) — \(error.localizedDescription, privacy: .public)")
+            }
             Self.writeIndex(Array(snapshot), to: indexURL)
         }
     }
@@ -286,12 +309,15 @@ public final class ConversationStore: @unchecked Sendable {
     }
 
     private static func writeIndex(_ entries: [ConversationSummary], to url: URL) {
-        try? FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        if let data = try? JSONEncoder().encode(entries) {
-            try? data.write(to: url, options: .atomic)
+        do {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let data = try JSONEncoder().encode(entries)
+            try data.write(to: url, options: .atomic)
+        } catch {
+            log.error("索引写盘失败：\(url.path, privacy: .public) — \(error.localizedDescription, privacy: .public)")
         }
     }
 

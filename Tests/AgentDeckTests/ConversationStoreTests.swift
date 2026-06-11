@@ -94,6 +94,43 @@ final class ConversationStoreTests: XCTestCase {
         XCTAssertEqual(reopened.all().map(\.id), ["c1"], "index.json 不会被当成会话文件")
     }
 
+    // MARK: - 退出刷盘(#32)与写盘失败一致性(#33)
+
+    func testTerminationFlushPersistsPendingWrites() {
+        let store = tempStore()
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        let name = Notification.Name("agentdeck.test.willTerminate")
+        store.installTerminationFlush(on: name)
+
+        store.save(conversation(id: "c1", agent: "claude", texts: [(.user, "最后一轮")], updatedAt: Date()))
+        // 不调 waitForPendingWrites:通知处理本身必须同步排空写盘队列
+        NotificationCenter.default.post(name: name, object: nil)
+
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: store.directory.appendingPathComponent("c1.json").path),
+            "willTerminate 后写盘任务应已全部落定"
+        )
+    }
+
+    func testSaveFailureLeavesIndexUntouched() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // 预置旧索引,并用同名目录占住 c1.json → data.write(.atomic) 必失败
+        let old = ConversationSummary(id: "old", title: "旧", agentName: "a", updatedAt: Date(timeIntervalSince1970: 1))
+        try JSONEncoder().encode([old]).write(to: dir.appendingPathComponent("index.json"))
+        try FileManager.default.createDirectory(at: dir.appendingPathComponent("c1.json"), withIntermediateDirectories: true)
+
+        let store = ConversationStore(directory: dir)
+        store.save(conversation(id: "c1", agent: "claude", texts: [(.user, "写不进去")], updatedAt: Date()))
+        store.waitForPendingWrites()
+
+        XCTAssertNil(store.load(id: "c1"), "数据文件没写成")
+        let indexData = try Data(contentsOf: dir.appendingPathComponent("index.json"))
+        let entries = try JSONDecoder().decode([ConversationSummary].self, from: indexData)
+        XCTAssertEqual(entries.map(\.id), ["old"], "数据写失败时索引保持原样,不引用不存在的会话")
+    }
+
     func testSearchFindsMatchesWithSnippetSortedByDate() {
         let convos = [
             conversation(id: "a", agent: "claude", texts: [(.user, "帮我修复登录 bug"), (.assistant, "好的")], updatedAt: Date(timeIntervalSince1970: 1)),
