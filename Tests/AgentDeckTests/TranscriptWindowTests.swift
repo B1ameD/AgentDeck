@@ -66,6 +66,25 @@ final class TranscriptWindowTests: XCTestCase {
         XCTAssertEqual(huge, 60 * 21 + 24, "封顶 60 行")
     }
 
+    func testTailLayoutCoversViewportPlusMarginFromEnd() {
+        // 视口 500 + margin 900 = 需盖 1400;每行占 110 → 13 行 → lo = 37
+        let (layout, bottomOffset) = TranscriptWindow.tailLayout(rowHeights: uniform, viewportHeight: 500)
+        XCTAssertEqual(layout.range, 37..<50)
+        XCTAssertEqual(layout.topInset, 37 * 100 + 36 * 10)
+        XCTAssertEqual(layout.bottomInset, 0, "尾部布局必然贴到末行")
+        XCTAssertEqual(bottomOffset, 5490 - 500, "贴底偏移 = 内容总高 − 视口")
+    }
+
+    func testTailLayoutShortTranscript() {
+        let (layout, bottomOffset) = TranscriptWindow.tailLayout(rowHeights: [50, 80], viewportHeight: 500)
+        XCTAssertEqual(layout.range, 0..<2, "盖不满视口时全量")
+        XCTAssertEqual(layout.topInset, 0)
+        XCTAssertEqual(bottomOffset, 0, "内容比视口矮时无偏移")
+        let (empty, offset) = TranscriptWindow.tailLayout(rowHeights: [], viewportHeight: 500)
+        XCTAssertEqual(empty.range, 0..<0)
+        XCTAssertEqual(offset, 0)
+    }
+
     func testExpandAllDefaultsOff() {
         XCTAssertFalse(TranscriptWindow.expandAllDefault, "默认走占位虚拟化")
     }

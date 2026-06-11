@@ -37,6 +37,36 @@ enum TranscriptWindow {
         return CGFloat(min(lines, 60)) * 21 + 24
     }
 
+    /// 打开/切换/转录回填时的**确定性尾部布局**：从末行向上累计直到盖满「视口+预渲染余量」。
+    /// 同时返回贴底滚动偏移（内容总高−视口）——调用方把它预置为「最近偏移」，
+    /// 使首帧渲染与随后的偏移上报处于同一坐标系：布局不再经历多帧收敛，
+    /// defaultScrollAnchor(.bottom) 的锚定不会被坐标系切换掀翻（首发 bug 根因）。
+    static func tailLayout(
+        rowHeights: [CGFloat],
+        viewportHeight: CGFloat
+    ) -> (layout: VirtualLayout, bottomOffset: CGFloat) {
+        let count = rowHeights.count
+        guard count > 0 else {
+            return (VirtualLayout(range: 0..<0, topInset: 0, bottomInset: 0), 0)
+        }
+        let needed = viewportHeight + renderMargin
+        var covered: CGFloat = 0
+        var lo = count
+        while lo > 0, covered < needed {
+            lo -= 1
+            covered += rowHeights[lo] + rowSpacing
+        }
+        var topInset: CGFloat = 0
+        if lo > 0 {
+            var sum: CGFloat = 0
+            for j in 0..<lo { sum += rowHeights[j] }
+            topInset = sum + rowSpacing * CGFloat(lo - 1)
+        }
+        var total: CGFloat = -rowSpacing
+        for height in rowHeights { total += height + rowSpacing }
+        return (VirtualLayout(range: lo..<count, topInset: topInset, bottomInset: 0), max(0, total - viewportHeight))
+    }
+
     /// 由各行高度、滚动偏移（内容顶到视口顶的距离）与视口高计算虚拟化布局。
     /// VStack(spacing) 模型：行 i 起点 y_i=Σ_{j<i}(h_j+spacing)；
     /// topInset 替代 rows[0..<lo] 含其内部 spacing（=Σh+spacing×(lo-1)），

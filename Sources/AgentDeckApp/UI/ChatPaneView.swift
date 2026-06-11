@@ -53,6 +53,9 @@ struct ChatPaneView: View {
     @State private var rowEstimates: [ChatMessage.ID: RowEstimate] = [:]
     /// 最近一次上报的滚动偏移（高度/条数变化时用它重算布局）。
     @State private var lastOffset: CGFloat = 0
+    /// 钉底护航期截止时刻：首开/发消息后的短窗口内,布局重算一律维持确定性尾部布局,
+    /// 忽略瞬态偏移(首帧内容尚未锚到底时会上报一个「顶部」偏移,会把尾部布局改写成头部区间)。
+    @State private var pinHoldUntil = Date.distantPast
 
     private struct RowEstimate: Equatable {
         var chars: Int
@@ -155,25 +158,26 @@ struct ChatPaneView: View {
         .defaultScrollAnchor(.bottom)
         // 进入/切换不同会话时重建滚动视图，确保每次点进都从最新（底部）开始，而非上次的位置。
         .id(session.id)
-        // 切换会话时重置虚拟化状态（@State 不随上面的 .id 重建）。
+        // 切换会话时重置虚拟化状态并立即铺出确定性尾部布局（@State 不随上面的 .id 重建）。
         .onChange(of: session.id) { _, _ in
             measuredHeights = [:]
             rowEstimates = [:]
-            virtualLayout = TranscriptWindow.VirtualLayout(range: 0..<0, topInset: 0, bottomInset: 0)
+            initializeTailLayout(viewport: outer.size.height, proxy: proxy)
         }
-        // 首开/切换会话：头几帧占位高度从兜底值收敛到估算/实测值,内容总高连续变动,
-        // defaultScrollAnchor(.bottom) 会放弃锚定把视口留在顶部——用多帧持续钉底护住收敛期。
+        // 首开：确定性铺尾部布局——首帧渲染与随后的偏移上报同坐标系，
+        // 不经历多帧收敛，defaultScrollAnchor(.bottom) 的锚定不会被掀翻。
         .onAppear {
-            pinAfterReflow(proxy, to: Self.bottomAnchorID, anchor: .bottom, frames: 8)
+            initializeTailLayout(viewport: outer.size.height, proxy: proxy)
         }
-        // 消息总数变化：自己发消息时跳到底（消息可能在视口外，用户会以为没发出去）；
-        // 从空载入（重开会话异步回填转录）同样钉底护住收敛；
+        // 消息总数变化：自己发消息跳到底（消息可能在视口外，用户会以为没发出去）；
+        // 从空载入（重开会话异步回填转录）重新铺尾部布局；
         // 其余情况重算布局即可——翻历史中新消息只是底部占位变高，零打扰。
         .onChange(of: session.messages.count) { oldCount, newCount in
             if newCount > oldCount, oldCount == 0 || session.messages.last?.role == .user {
-                pinAfterReflow(proxy, to: Self.bottomAnchorID, anchor: .bottom, frames: 8)
+                initializeTailLayout(viewport: outer.size.height, proxy: proxy)
+            } else {
+                updateVirtualLayout(offset: lastOffset, viewport: outer.size.height)
             }
-            updateVirtualLayout(offset: lastOffset, viewport: outer.size.height)
         }
         .onPreferenceChange(ChatBottomVisibleKey.self) { atBottom = $0 }
         // 滚动偏移变化 → 重算真身渲染区间。无 scrollTo、无冷却:滚动手感与原生一致,
@@ -278,9 +282,8 @@ struct ChatPaneView: View {
         session.messages[resolvedLayout.range]
     }
 
-    /// 重算虚拟化布局：行高取「实测优先,否则按字数估算(缓存,字数变了才重算)」。
-    private func updateVirtualLayout(offset: CGFloat, viewport: CGFloat) {
-        guard !expandAllHistory else { return }
+    /// 各行高度快照：实测优先，否则按字数估算（缓存，字数变了才重算——流式增长跟随）。
+    private func rowHeightsSnapshot() -> [CGFloat] {
         let messages = session.messages
         var heights = [CGFloat]()
         heights.reserveCapacity(messages.count)
@@ -299,8 +302,41 @@ struct ChatPaneView: View {
             rowEstimates[message.id] = RowEstimate(chars: chars, height: estimate)
             heights.append(estimate)
         }
-        let layout = TranscriptWindow.virtualLayout(rowHeights: heights, offset: offset, viewportHeight: viewport)
+        return heights
+    }
+
+    /// 重算虚拟化布局（滚动偏移驱动）。钉底护航期内忽略偏移、维持确定性尾部布局。
+    private func updateVirtualLayout(offset: CGFloat, viewport: CGFloat) {
+        guard !expandAllHistory else { return }
+        if Date() < pinHoldUntil {
+            applyTailLayout(viewport: viewport)
+            return
+        }
+        let layout = TranscriptWindow.virtualLayout(
+            rowHeights: rowHeightsSnapshot(),
+            offset: offset,
+            viewportHeight: viewport
+        )
         if layout != virtualLayout { virtualLayout = layout }
+    }
+
+    /// 确定性尾部布局：铺出尾部区间，并把贴底偏移预置为「最近偏移」——
+    /// 渲染坐标系与偏移上报一步对齐，不经历多帧收敛。
+    private func applyTailLayout(viewport: CGFloat) {
+        let (layout, bottomOffset) = TranscriptWindow.tailLayout(
+            rowHeights: rowHeightsSnapshot(),
+            viewportHeight: viewport
+        )
+        lastOffset = bottomOffset
+        if layout != virtualLayout { virtualLayout = layout }
+    }
+
+    /// 打开/切换/转录回填：铺尾部布局 + 开启护航期 + 多帧钉底。
+    private func initializeTailLayout(viewport: CGFloat, proxy: ScrollViewProxy) {
+        guard !expandAllHistory else { return }
+        applyTailLayout(viewport: viewport)
+        pinHoldUntil = Date().addingTimeInterval(0.35)
+        pinAfterReflow(proxy, to: Self.bottomAnchorID, anchor: .bottom, frames: 8)
     }
 
     /// 真身行的高度上报（背景测量,不影响布局）。
