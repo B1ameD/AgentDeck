@@ -161,11 +161,17 @@ struct ChatPaneView: View {
             rowEstimates = [:]
             virtualLayout = TranscriptWindow.VirtualLayout(range: 0..<0, topInset: 0, bottomInset: 0)
         }
+        // 首开/切换会话：头几帧占位高度从兜底值收敛到估算/实测值,内容总高连续变动,
+        // defaultScrollAnchor(.bottom) 会放弃锚定把视口留在顶部——用多帧持续钉底护住收敛期。
+        .onAppear {
+            pinAfterReflow(proxy, to: Self.bottomAnchorID, anchor: .bottom, frames: 8)
+        }
         // 消息总数变化：自己发消息时跳到底（消息可能在视口外，用户会以为没发出去）；
+        // 从空载入（重开会话异步回填转录）同样钉底护住收敛；
         // 其余情况重算布局即可——翻历史中新消息只是底部占位变高，零打扰。
         .onChange(of: session.messages.count) { oldCount, newCount in
-            if newCount > oldCount, session.messages.last?.role == .user {
-                pinAfterReflow(proxy, to: Self.bottomAnchorID, anchor: .bottom)
+            if newCount > oldCount, oldCount == 0 || session.messages.last?.role == .user {
+                pinAfterReflow(proxy, to: Self.bottomAnchorID, anchor: .bottom, frames: 8)
             }
             updateVirtualLayout(offset: lastOffset, viewport: outer.size.height)
         }
@@ -311,10 +317,11 @@ struct ChatPaneView: View {
         pinAfterReflow(proxy, to: Self.bottomAnchorID, anchor: .bottom)
     }
 
-    /// 双帧无动画锚定：重排后等布局落定再钉一次兜底（30ms 间隔）。
-    private func pinAfterReflow(_ proxy: ScrollViewProxy, to id: some Hashable, anchor: UnitPoint) {
+    /// 多帧无动画锚定：重排后每 30ms 钉一次直到布局落定。常规重排 2 帧足够；
+    /// 首开/转录回填期间内容总高连续收敛,需更长的护航(8 帧 ≈ 240ms)。
+    private func pinAfterReflow(_ proxy: ScrollViewProxy, to id: some Hashable, anchor: UnitPoint, frames: Int = 2) {
         Task { @MainActor in
-            for _ in 0..<2 {
+            for _ in 0..<frames {
                 await Task.yield()
                 var transaction = Transaction()
                 transaction.disablesAnimations = true
