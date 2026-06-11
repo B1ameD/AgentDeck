@@ -14,6 +14,13 @@ private struct ChatTopDistanceKey: PreferenceKey {
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 
+/// 窗口底部哨兵在视口坐标系里的 minY（减视口高=距视口下沿多远）。
+/// 浮动窗口与顶部哨兵镜像：下滑接近窗口底时把窗口下移一批。
+private struct ChatWindowBottomDistanceKey: PreferenceKey {
+    static let defaultValue: CGFloat = .greatestFiniteMagnitude
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = min(value, nextValue()) }
+}
+
 /// 聊天框（底部 safeAreaInset）的实时高度。多行输入会把它撑高，
 /// 而 inset 增高只缩小视口、不调整滚动偏移——不重锚的话最新消息会被盖住（#3）。
 private struct ComposerHeightKey: PreferenceKey {
@@ -36,9 +43,10 @@ struct ChatPaneView: View {
     /// 用户当前是否处于（接近）聊天底部。只有「本就在底部」时，侧栏开合才把视图保持贴底；
     /// 若在上翻看历史，则不打扰其位置。避免之前「一开侧栏就强行滚到底」的突兀观感。
     @State private var atBottom = true
-    /// 长转录尾部窗口：只渲染最近 N 条（#2 首帧性能——否则要测量全部气泡高度，
-    /// 每条都是一次完整 TextKit 布局）。上滑接近顶部时自动渐进释放更早消息。
-    @State private var transcriptLimit = TranscriptWindow.defaultLimit
+    /// 浮动渲染窗口：只渲染视口附近 ~80 条（#2 首帧性能——否则要测量全部气泡高度，
+    /// 每条都是一次完整 TextKit 布局）。滚动接近窗口顶/底时窗口跟随滑动，渲染量全程有界。
+    /// (0,0) 表示未初始化，由 TranscriptWindow.resolved 回落到尾部窗口。
+    @State private var window = TranscriptWindow.Window(start: 0, end: 0)
     /// 自动释放冷却：让上一批的 TextKit 布局先落定，避免连续触发把滚动卡死。
     @State private var lastAutoRelease = Date.distantPast
     /// 聊天框当前高度（随输入行数变化）。用于在它长高/收缩时把贴底的视图重新钉底（#3）。
@@ -54,12 +62,12 @@ struct ChatPaneView: View {
         ScrollViewReader { proxy in
         GeometryReader { outer in
         ScrollView {
-            // 注意是**急切** VStack:可见消息已被 TranscriptWindow 截到尾部窗口(默认 100 条),
+            // 注意是**急切** VStack:可见消息已被 TranscriptWindow 截到浮动窗口(~80 条),
             // 全部气泡高度一次定型——LazyVStack 在上滑时才物化上方气泡,NSTextView 真实高度
             // 迟到会顶得内容跳动(「浮现移动」),而窗口化后急切渲染的成本是有界的。
             VStack(alignment: .leading, spacing: 10) {
-                if transcriptSlice.hiddenCount > 0 {
-                    // 顶部哨兵：上报与视口的距离，接近时自动释放下一批更早消息（无按钮，渐进展开）。
+                if effectiveWindow.hiddenAbove > 0 {
+                    // 顶部哨兵：上报与视口的距离，接近时窗口上移一批（顶部放出、底部回收）。
                     Color.clear.frame(height: 1)
                         .background(GeometryReader { top in
                             Color.clear.preference(
@@ -107,7 +115,18 @@ struct ChatPaneView: View {
                             removal: .opacity
                         ))
                 }
-                if shouldShowThinkingIndicator {
+                if effectiveWindow.hiddenBelow(totalCount: session.messages.count) > 0 {
+                    // 底部哨兵（与顶部镜像）：下滑接近窗口底时窗口下移一批（底部放出、顶部回收）。
+                    Color.clear.frame(height: 1)
+                        .background(GeometryReader { bottom in
+                            Color.clear.preference(
+                                key: ChatWindowBottomDistanceKey.self,
+                                value: bottom.frame(in: .named(Self.scrollSpace)).minY
+                            )
+                        })
+                }
+                // 思考指示器只在窗口贴尾时显示——窗口脱离尾部时它会错位在历史中间。
+                if shouldShowThinkingIndicator && effectiveWindow.end == session.messages.count {
                     ThinkingIndicatorBubble()
                         .transition(.asymmetric(
                             insertion: .opacity.combined(with: .offset(y: 8)),
@@ -133,15 +152,32 @@ struct ChatPaneView: View {
         .defaultScrollAnchor(.bottom)
         // 进入/切换不同会话时重建滚动视图，确保每次点进都从最新（底部）开始，而非上次的位置。
         .id(session.id)
-        // 切换会话时收回尾部窗口（@State 不随上面的 .id 重建）。
-        .onChange(of: session.id) { _, _ in transcriptLimit = TranscriptWindow.defaultLimit }
+        // 切换会话时收回窗口到尾部（@State 不随上面的 .id 重建）。
+        .onChange(of: session.id) { _, _ in
+            window = TranscriptWindow.tail(totalCount: session.messages.count)
+        }
+        // 消息总数变化：贴尾则窗口跟随新尾部；翻历史中则不动（新消息落在窗口外，渲染量不变）；
+        // 自己发消息一律跳回尾部并钉底（消息在窗口外时用户会以为没发出去）。
+        .onChange(of: session.messages.count) { oldCount, newCount in
+            if newCount > oldCount, session.messages.last?.role == .user {
+                window = TranscriptWindow.tail(totalCount: newCount)
+                pinAfterReflow(proxy, to: Self.bottomAnchorID, anchor: .bottom)
+            } else {
+                window = TranscriptWindow.afterCountChange(window, oldCount: oldCount, newCount: newCount)
+            }
+        }
         .onPreferenceChange(ChatBottomVisibleKey.self) { atBottom = $0 }
-        // 上滑几乎到顶 → 自动放出下一批更早消息。注意 defaultScrollAnchor(.bottom)
-        // 只在贴底时保持距底偏移；翻历史时保持的是「距顶偏移」，释放后必须把原首条
-        // 钉回视口顶（见 releaseOlderMessages），否则视口压进新内容会连锁触发直至全量展开。
+        // 上滑几乎到窗口顶 → 窗口上移一批。注意 defaultScrollAnchor(.bottom)
+        // 只在贴底时保持距底偏移；翻历史时保持的是「距顶偏移」，滑动后必须把原首条
+        // 钉回视口顶（见 slideWindowUp），否则视口压进新内容会连锁触发。
         .onPreferenceChange(ChatTopDistanceKey.self) { distance in
             guard distance > -TranscriptWindow.releaseDistance else { return }
-            releaseOlderMessages(proxy)
+            slideWindowUp(proxy)
+        }
+        // 下滑接近窗口底 → 窗口下移一批（镜像）：把原末条钉回视口底，抵消底部增长的视口下坠。
+        .onPreferenceChange(ChatWindowBottomDistanceKey.self) { minY in
+            guard minY - outer.size.height < TranscriptWindow.releaseDistance else { return }
+            slideWindowDown(proxy)
         }
         // 侧栏开/合会改列宽并重排聊天：仅当本就贴底时，逐帧把视图保持贴底（无动画，故不会上下乱滚）。
         .onChange(of: sidebarVisible) { _, _ in keepPinnedToBottomIfNeeded(proxy) }
@@ -199,58 +235,67 @@ struct ChatPaneView: View {
         }
     }
 
-    private var transcriptSlice: (hiddenCount: Int, visibleStart: Int) {
-        TranscriptWindow.slice(
-            totalCount: session.messages.count,
-            // 「默认全部展开」打开时跳过尾部窗口:hiddenCount 恒 0,哨兵与自动释放自然失效。
-            // 代价是首帧需测量全部气泡高度(#2 的根因),长会话打开会明显变慢。
-            limit: expandAllHistory ? Int.max : transcriptLimit
-        )
+    /// 当前生效的渲染窗口：「全部展开」直接全量；否则把 @State 窗口落到当前消息数组上
+    /// （未初始化/越界回落尾部）。
+    private var effectiveWindow: TranscriptWindow.Window {
+        let total = session.messages.count
+        if expandAllHistory { return TranscriptWindow.full(totalCount: total) }
+        return TranscriptWindow.resolved(window, totalCount: total)
     }
 
     private var visibleMessages: ArraySlice<ChatMessage> {
-        session.messages[transcriptSlice.visibleStart...]
+        let visible = effectiveWindow
+        return session.messages[visible.start..<visible.end]
     }
 
-    /// 放出下一批更早消息，并把释放前的首条消息**无动画钉回视口顶**——
-    /// 新批次留在视口上方等用户继续上滑，而不是让视口滑进新内容（那会连锁触发到全量展开）。
-    /// 250ms 冷却让上一批 TextKit 布局落定。
-    private func releaseOlderMessages(_ proxy: ScrollViewProxy) {
-        guard transcriptSlice.hiddenCount > 0 else { return }
-        let now = Date()
-        guard now.timeIntervalSince(lastAutoRelease) > 0.25 else { return }
-        lastAutoRelease = now
+    /// 窗口上移一批（顶部放出、底部回收），并把滑动前的首条消息**无动画钉回视口顶**——
+    /// 新批次留在视口上方等用户继续上滑，而不是让视口滑进新内容（那会连锁触发）。
+    private func slideWindowUp(_ proxy: ScrollViewProxy) {
+        guard !expandAllHistory else { return }
+        let current = effectiveWindow
+        guard current.hiddenAbove > 0, takeSlideCooldown() else { return }
         let anchorID = visibleMessages.first?.id
-        transcriptLimit = TranscriptWindow.scrollExpandedLimit(
-            current: transcriptLimit,
-            totalCount: session.messages.count
-        )
+        window = TranscriptWindow.slidUp(current, totalCount: session.messages.count)
         guard let anchorID else { return }
-        Task { @MainActor in
-            // 双帧锚定（同 keepPinnedToBottomIfNeeded）：等新批次布局落定后再钉一次兜底。
-            for _ in 0..<2 {
-                await Task.yield()
-                var transaction = Transaction()
-                transaction.disablesAnimations = true
-                withTransaction(transaction) { proxy.scrollTo(anchorID, anchor: .top) }
-                try? await Task.sleep(for: .milliseconds(30))
-            }
-        }
+        pinAfterReflow(proxy, to: anchorID, anchor: .top)
     }
 
-    /// 仅当用户本就贴底时，在侧栏宽度动画(≈0.28s)期间逐帧把视图保持在底部。
-    /// 关键：用**无动画**的 scrollTo——内容随列宽重排时底部始终被钉住，看起来是「内容贴着底不动」，
-    /// 而非之前那种带动画的来回滚动。若用户在上翻看历史（非贴底），则完全不打扰。
+    /// 窗口下移一批（底部放出、顶部回收，镜像）：把滑动前的末条消息钉回视口底，
+    /// 抵消 defaultScrollAnchor 在近底时跟随新内容的下坠（否则会连锁触发直到尾部）。
+    private func slideWindowDown(_ proxy: ScrollViewProxy) {
+        guard !expandAllHistory else { return }
+        let total = session.messages.count
+        let current = effectiveWindow
+        guard current.hiddenBelow(totalCount: total) > 0, takeSlideCooldown() else { return }
+        let anchorID = visibleMessages.last?.id
+        window = TranscriptWindow.slidDown(current, totalCount: total)
+        guard let anchorID else { return }
+        pinAfterReflow(proxy, to: anchorID, anchor: .bottom)
+    }
+
+    /// 滑动冷却（两方向共享，250ms）：让上一批 TextKit 布局先落定，避免连续触发把滚动卡死。
+    private func takeSlideCooldown() -> Bool {
+        let now = Date()
+        guard now.timeIntervalSince(lastAutoRelease) > 0.25 else { return false }
+        lastAutoRelease = now
+        return true
+    }
+
+    /// 仅当用户贴底**且窗口在尾部**时把视图重新钉底（侧栏开合/窗口缩放/聊天框高度变化共用）。
+    /// 关键：无动画 scrollTo——内容重排时底部始终被钉住；翻历史（窗口脱尾）时完全不打扰。
     private func keepPinnedToBottomIfNeeded(_ proxy: ScrollViewProxy) {
-        guard atBottom else { return }
-        // 中间栏现在是「瞬变」重排（一次性、无动画），故只需在重排稳定后**无动画**地锚一次（再补一帧兜底），
-        // 不再用逐帧 scrollTo 追逐动画中的底部——那正是之前跳动/抖动的来源。
+        guard atBottom, effectiveWindow.hiddenBelow(totalCount: session.messages.count) == 0 else { return }
+        pinAfterReflow(proxy, to: Self.bottomAnchorID, anchor: .bottom)
+    }
+
+    /// 双帧无动画锚定：重排后等布局落定再钉一次兜底（30ms 间隔）。
+    private func pinAfterReflow(_ proxy: ScrollViewProxy, to id: some Hashable, anchor: UnitPoint) {
         Task { @MainActor in
             for _ in 0..<2 {
                 await Task.yield()
                 var transaction = Transaction()
                 transaction.disablesAnimations = true
-                withTransaction(transaction) { proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom) }
+                withTransaction(transaction) { proxy.scrollTo(id, anchor: anchor) }
                 try? await Task.sleep(for: .milliseconds(30))
             }
         }
@@ -1131,269 +1176,6 @@ private struct ThinkingIndicatorBubble: View {
             }
         }
         .accessibilityLabel("思考中")
-    }
-}
-
-/// AskUserQuestion 卡片：渲染问题与可点选项。
-/// opencode（question.requestID 非空）：agent **原地等待**，提交直接经 reply API 回传、它据此继续。
-/// Claude（requestID 为空）：`-p` 非交互无法回灌进程，提交作为**下一条消息**发出（会话续接）。
-private struct AskUserQuestionCard: View {
-    let question: AskUserQuestion
-    let onAnswer: ([[String]]) -> Void
-    var onReject: () -> Void = {}
-    @State private var selections: [String: Set<String>] = [:] // 问题 id → 已选 label 集合
-    @State private var submitting = false
-
-    /// 会阻塞等待回答：opencode（requestID）或 Claude 经 MCP ask_user（mcpRequestID）。其余（Claude 追加消息）为 false。
-    private var waitsForReply: Bool { question.requestID != nil || question.mcpRequestID != nil }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            header
-            Text(waitsForReply
-                ? "Agent 正在等待你的选择；选好点「提交」即据此继续。"
-                : "Claude 不会停下来等待；选好点「提交」会作为新消息发给它继续。")
-                .appFont(relative: -3)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            ForEach(question.questions) { item in
-                questionBlock(item)
-            }
-            submitRow
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Theme.accentSoft, in: RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous)
-                .stroke(Theme.accent.opacity(0.35), lineWidth: 1)
-        }
-    }
-
-    private var header: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "questionmark.bubble")
-                .foregroundStyle(Theme.accent)
-            Text("需要你的选择")
-                .appFont(relative: -1, weight: .semibold)
-            Spacer(minLength: 8)
-        }
-    }
-
-    private func questionBlock(_ item: AskUserQuestion.Item) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 6) {
-                Text(item.title)
-                    .appFont(relative: -1, weight: .medium)
-                    .fixedSize(horizontal: false, vertical: true)
-                if item.multiSelect {
-                    Text("可多选")
-                        .appFont(relative: -3, weight: .medium)
-                        .foregroundStyle(Theme.accentStrong)
-                        .padding(.horizontal, 5).padding(.vertical, 1)
-                        .background(Capsule().fill(Theme.accent.opacity(0.12)))
-                }
-            }
-            ForEach(item.options) { option in
-                optionRow(item: item, option: option)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func optionRow(item: AskUserQuestion.Item, option: AskUserQuestion.Option) -> some View {
-        let isSelected = selections[item.id]?.contains(option.label) == true
-        return Button {
-            toggle(item: item, option: option)
-        } label: {
-            HStack(alignment: .top, spacing: 8) {
-                Image(systemName: selectionSymbol(multiSelect: item.multiSelect, selected: isSelected))
-                    .appFont(relative: -1)
-                    .foregroundStyle(isSelected ? Theme.accent : Color.secondary)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(option.label)
-                        .appFont(relative: -1, weight: .medium)
-                        .foregroundStyle(.primary)
-                    if !option.description.isEmpty {
-                        Text(option.description)
-                            .appFont(relative: -3)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous)
-                    .fill(isSelected ? Theme.selected : Theme.panelRaised.opacity(0.6))
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous)
-                    .stroke(isSelected ? Theme.accent.opacity(0.5) : Theme.hairline, lineWidth: 1)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(submitting)
-    }
-
-    private var submitRow: some View {
-        HStack(spacing: 10) {
-            Button(action: skip) {
-                Text("跳过")
-                    .appFont(relative: -2, weight: .medium)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 7)
-                    .background(Theme.controlHover.opacity(0.5), in: Capsule())
-            }
-            .buttonStyle(.plain)
-            .disabled(submitting)
-            .help(waitsForReply ? "拒绝该提问（agent 继续）" : "跳过，不回复")
-            Spacer(minLength: 0)
-            Button(action: submit) {
-                Text(submitting ? "提交中" : "提交")
-                    .appFont(relative: -1, weight: .semibold)
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 7)
-                    .background(canSubmit ? Theme.accent : Color.secondary.opacity(0.32), in: Capsule())
-            }
-            .buttonStyle(.plain)
-            .disabled(!canSubmit)
-            .help(waitsForReply ? "把选择回传给运行中的 agent" : "把选择作为新消息发给 Claude")
-        }
-    }
-
-    private func selectionSymbol(multiSelect: Bool, selected: Bool) -> String {
-        if multiSelect { return selected ? "checkmark.square.fill" : "square" }
-        return selected ? "largecircle.fill.circle" : "circle"
-    }
-
-    private var canSubmit: Bool {
-        !submitting && question.questions.allSatisfy { !(selections[$0.id]?.isEmpty ?? true) }
-    }
-
-    private func toggle(item: AskUserQuestion.Item, option: AskUserQuestion.Option) {
-        var set = selections[item.id] ?? []
-        if item.multiSelect {
-            if set.contains(option.label) { set.remove(option.label) } else { set.insert(option.label) }
-        } else {
-            set = [option.label] // 单选：替换
-        }
-        selections[item.id] = set
-    }
-
-    private func submit() {
-        guard canSubmit else { return }
-        submitting = true
-        onAnswer(orderedSelections())
-    }
-
-    private func skip() {
-        guard !submitting else { return }
-        submitting = true
-        onReject()
-    }
-
-    /// 每题按选项原始顺序导出选中的 label 数组（opencode reply / Claude 文案共用）。
-    private func orderedSelections() -> [[String]] {
-        question.questions.map { item in
-            item.options.map(\.label).filter { selections[item.id]?.contains($0) == true }
-        }
-    }
-}
-
-/// 提问工具在 assistant 时间线中的两种形态：待回答显示卡片，完成后原位折叠成「询问」工具记录。
-private struct QuestionToolTimelineBlock: View {
-    let record: QuestionToolRecord
-    let onAnswer: ([[String]]) -> Void
-    let onReject: () -> Void
-
-    @ViewBuilder
-    var body: some View {
-        if record.isPending {
-            AskUserQuestionCard(
-                question: record.question,
-                onAnswer: onAnswer,
-                onReject: onReject
-            )
-        } else {
-            ResolvedQuestionToolRow(record: record)
-        }
-    }
-}
-
-private struct ResolvedQuestionToolRow: View {
-    let record: QuestionToolRecord
-    @State private var expanded = false
-    @State private var hovering = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Button {
-                withAnimation(.easeOut(duration: 0.16)) {
-                    expanded.toggle()
-                }
-            } label: {
-                HStack(spacing: 7) {
-                    Image(systemName: "questionmark.bubble")
-                        .appFont(relative: -2, weight: .semibold)
-                        .foregroundStyle(Theme.accent.opacity(0.82))
-                    Text(QuestionToolPresentation.title)
-                        .appFont(relative: -1, weight: .semibold)
-                        .foregroundStyle(.secondary)
-                    Text(summary)
-                        .appFont(relative: -2)
-                        .foregroundStyle(.tertiary)
-                    Spacer(minLength: 0)
-                    Image(systemName: "chevron.right")
-                        .appFont(relative: -3, weight: .semibold)
-                        .rotationEffect(.degrees(expanded ? 90 : 0))
-                        .foregroundStyle(.tertiary)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help(expanded ? "收起询问详情" : "展开询问详情")
-
-            if expanded {
-                VStack(alignment: .leading, spacing: 5) {
-                    ForEach(Array(record.detailLines.enumerated()), id: \.offset) { _, line in
-                        Text(line)
-                            .appFont(relative: -2)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                    }
-                }
-                .padding(.leading, 21)
-                .transition(.opacity)
-            }
-        }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 7)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background {
-            if hovering && InlineRecordRowPresentation.highlightsOnHover {
-                RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous)
-                    .fill(Theme.controlHover.opacity(InlineRecordRowPresentation.hoverBackgroundOpacity))
-            }
-        }
-        .onHover { hovering = $0 }
-    }
-
-    private var summary: String {
-        switch record.resolution {
-        case .pending:
-            return ""
-        case .answered:
-            return QuestionToolPresentation.answeredSummary
-        case .skipped:
-            return QuestionToolPresentation.skippedSummary
-        }
     }
 }
 
