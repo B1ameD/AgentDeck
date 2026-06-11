@@ -14,6 +14,13 @@ private struct ChatTopDistanceKey: PreferenceKey {
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 
+/// 聊天框（底部 safeAreaInset）的实时高度。多行输入会把它撑高，
+/// 而 inset 增高只缩小视口、不调整滚动偏移——不重锚的话最新消息会被盖住（#3）。
+private struct ComposerHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
 struct ChatPaneView: View {
     @Bindable var session: AgentSession
     var workspace: WorkspaceController?
@@ -34,6 +41,8 @@ struct ChatPaneView: View {
     @State private var transcriptLimit = TranscriptWindow.defaultLimit
     /// 自动释放冷却：让上一批的 TextKit 布局先落定，避免连续触发把滚动卡死。
     @State private var lastAutoRelease = Date.distantPast
+    /// 聊天框当前高度（随输入行数变化）。用于在它长高/收缩时把贴底的视图重新钉底（#3）。
+    @State private var composerHeight: CGFloat = 0
 
     /// 聊天列表底部锚点 id（滚动到最新消息用）。
     private static let bottomAnchorID = "agentdeck.chat.bottomAnchor"
@@ -156,6 +165,16 @@ struct ChatPaneView: View {
                     menuOpen: $composerMenuOpen
                 )
             }
+            .background(GeometryReader { composer in
+                Color.clear.preference(key: ComposerHeightKey.self, value: composer.size.height)
+            })
+        }
+        // 聊天框长高/收缩（多行输入、附件 chips、发送后清空）只改 inset 不改滚动偏移：
+        // 贴底时最新消息会被盖住/露出空隙，与侧栏开合同样处理——无动画重新钉底（#3）。
+        .onPreferenceChange(ComposerHeightKey.self) { height in
+            guard abs(height - composerHeight) > 0.5 else { return }
+            composerHeight = height
+            keepPinnedToBottomIfNeeded(proxy)
         }
         .confirmationDialog(
             "允许运行 \(session.agent.name)？",
