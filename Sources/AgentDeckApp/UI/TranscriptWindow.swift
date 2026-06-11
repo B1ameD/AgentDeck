@@ -5,7 +5,8 @@ import Foundation
 /// (每条都是一次完整 TextKit 布局)——窗口化让首帧成本与历史长度解耦。
 enum TranscriptWindow {
     /// 默认初始渲染条数;上滑接近窗口顶部时按 scrollReleaseBatch 渐进放出。
-    static let defaultLimit = 40
+    /// 40→100：用户实测 100 条与 40 条流畅度相当，而「全部展开」明显卡顿——取更大的可视窗口。
+    static let defaultLimit = 100
     /// 设置项「历史会话默认全部展开」：打开后不做尾部窗口截断，打开会话即全量渲染。
     /// 代价＝首帧成本随历史长度线性增长（#2 的根因）；跨实例高度缓存会软化重复打开。
     static let expandAllStorageKey = "chat.transcript.expandAll"

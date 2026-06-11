@@ -54,7 +54,7 @@ struct ChatPaneView: View {
         ScrollViewReader { proxy in
         GeometryReader { outer in
         ScrollView {
-            // 注意是**急切** VStack:可见消息已被 TranscriptWindow 截到尾部窗口(默认 40 条),
+            // 注意是**急切** VStack:可见消息已被 TranscriptWindow 截到尾部窗口(默认 100 条),
             // 全部气泡高度一次定型——LazyVStack 在上滑时才物化上方气泡,NSTextView 真实高度
             // 迟到会顶得内容跳动(「浮现移动」),而窗口化后急切渲染的成本是有界的。
             VStack(alignment: .leading, spacing: 10) {
