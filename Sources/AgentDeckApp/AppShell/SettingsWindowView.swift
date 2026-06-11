@@ -291,7 +291,7 @@ struct SettingsWindowView: View {
                 .frame(width: controlWidth, alignment: .trailing)
             }
 
-            settingRow("历史会话全部展开", "关闭占位虚拟化（仅视口附近真实渲染、其余等高占位），所有消息全部真实渲染。长会话明显卡顿。") {
+            settingRow("历史会话全部展开", "打开会话即渲染全部历史消息，不再折叠为「最近 \(TranscriptWindow.defaultLimit) 条+上滑加载」。长会话首次打开会明显变慢。") {
                 Toggle("", isOn: $expandAllHistory)
                     .labelsHidden()
                     .toggleStyle(.switch)

@@ -7,39 +7,11 @@ private struct ChatBottomVisibleKey: PreferenceKey {
     static func reduce(value: inout Bool, nextValue: () -> Bool) { value = nextValue() }
 }
 
-/// 转录内容顶部相对视口顶的滚动偏移（≥0＝已向下滚多少）。占位虚拟化据此算可见行区间。
-/// 仅作 macOS 14 兜底——GeometryReader+preference 在滚动期间的触发不可靠（实测滚动时
-/// 不上报,虚拟化区间冻结）；macOS 15+ 走 ScrollOffsetWatcher(onScrollGeometryChange)。
-private struct ChatContentOffsetKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
-}
-
-/// 滚动偏移主通道：onScrollGeometryChange 是滚动几何变化的官方回调,
-/// 滚轮/拖滚动条/惯性滚动逐帧触发,不依赖 preference 链路。
-private struct ScrollOffsetWatcher: ViewModifier {
-    let onOffsetChange: (CGFloat) -> Void
-
-    func body(content: Content) -> some View {
-        if #available(macOS 15.0, *) {
-            content.onScrollGeometryChange(for: CGFloat.self) { geometry in
-                geometry.visibleRect.minY
-            } action: { _, newValue in
-                onOffsetChange(newValue)
-            }
-        } else {
-            content
-        }
-    }
-}
-
-/// 真身渲染中的各行实测高度（消息 id → 高度）。回填进测量表后，
-/// 该消息滚出视口改用**精确等高**占位——占位⇄真身切换不再引起跳动。
-private struct RowHeightsKey: PreferenceKey {
-    static let defaultValue: [ChatMessage.ID: CGFloat] = [:]
-    static func reduce(value: inout [ChatMessage.ID: CGFloat], nextValue: () -> [ChatMessage.ID: CGFloat]) {
-        value.merge(nextValue()) { _, new in new }
-    }
+/// 窗口顶部哨兵在视口坐标系里的 maxY（负值=在视口上方多远）。
+/// 用连续数值而非布尔：滚动中每帧变化都触发 onPreferenceChange，自动释放才能连续推进。
+private struct ChatTopDistanceKey: PreferenceKey {
+    static let defaultValue: CGFloat = -.greatestFiniteMagnitude
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 
 /// 聊天框（底部 safeAreaInset）的实时高度。多行输入会把它撑高，
@@ -64,23 +36,11 @@ struct ChatPaneView: View {
     /// 用户当前是否处于（接近）聊天底部。只有「本就在底部」时，侧栏开合才把视图保持贴底；
     /// 若在上翻看历史，则不打扰其位置。避免之前「一开侧栏就强行滚到底」的突兀观感。
     @State private var atBottom = true
-    /// 占位虚拟化布局（真实渲染区间+上下占位高度）。由滚动偏移/实测高度变化驱动更新；
-    /// range 为空＝未初始化，resolvedLayout 回落到尾部兜底。
-    @State private var virtualLayout = TranscriptWindow.VirtualLayout(range: 0..<0, topInset: 0, bottomInset: 0)
-    /// 实测行高（渲染过即记录）：占位与滚动度量用精确值，占位⇄真身切换高度无损。
-    @State private var measuredHeights: [ChatMessage.ID: CGFloat] = [:]
-    /// 未渲染过消息的估算行高缓存（按字数失效，流式增长时跟随更新）。
-    @State private var rowEstimates: [ChatMessage.ID: RowEstimate] = [:]
-    /// 最近一次上报的滚动偏移（高度/条数变化时用它重算布局）。
-    @State private var lastOffset: CGFloat = 0
-    /// 钉底护航期截止时刻：首开/发消息后的短窗口内,布局重算一律维持确定性尾部布局,
-    /// 忽略瞬态偏移(首帧内容尚未锚到底时会上报一个「顶部」偏移,会把尾部布局改写成头部区间)。
-    @State private var pinHoldUntil = Date.distantPast
-
-    private struct RowEstimate: Equatable {
-        var chars: Int
-        var height: CGFloat
-    }
+    /// 长转录尾部窗口：只渲染最近 N 条（#2 首帧性能——否则要测量全部气泡高度，
+    /// 每条都是一次完整 TextKit 布局）。上滑接近顶部时自动渐进释放更早消息。
+    @State private var transcriptLimit = TranscriptWindow.defaultLimit
+    /// 自动释放冷却：让上一批的 TextKit 布局先落定，避免连续触发把滚动卡死。
+    @State private var lastAutoRelease = Date.distantPast
     /// 聊天框当前高度（随输入行数变化）。用于在它长高/收缩时把贴底的视图重新钉底（#3）。
     @State private var composerHeight: CGFloat = 0
     /// 设置项：历史会话默认全部展开（不做尾部窗口截断）。
@@ -94,12 +54,19 @@ struct ChatPaneView: View {
         ScrollViewReader { proxy in
         GeometryReader { outer in
         ScrollView {
-            // 注意是**急切** VStack:占位虚拟化只让视口附近的消息走真身渲染,
-            // 其余是等高 Color.clear——滚动度量对应完整历史,渲染成本全程有界。
-            VStack(alignment: .leading, spacing: TranscriptWindow.rowSpacing) {
-                if resolvedLayout.topInset > 0 {
-                    // 顶部占位：顶替 range 之前所有行(含行距)的总高,滚动条因此对应完整历史。
-                    Color.clear.frame(height: resolvedLayout.topInset)
+            // 注意是**急切** VStack:可见消息已被 TranscriptWindow 截到尾部窗口(默认 100 条),
+            // 全部气泡高度一次定型——LazyVStack 在上滑时才物化上方气泡,NSTextView 真实高度
+            // 迟到会顶得内容跳动(「浮现移动」),而窗口化后急切渲染的成本是有界的。
+            VStack(alignment: .leading, spacing: 10) {
+                if transcriptSlice.hiddenCount > 0 {
+                    // 顶部哨兵：上报与视口的距离，接近时自动释放下一批更早消息（无按钮，渐进展开）。
+                    Color.clear.frame(height: 1)
+                        .background(GeometryReader { top in
+                            Color.clear.preference(
+                                key: ChatTopDistanceKey.self,
+                                value: top.frame(in: .named(Self.scrollSpace)).maxY
+                            )
+                        })
                 }
                 ForEach(visibleMessages) { message in
                     MessageBubble(
@@ -135,15 +102,10 @@ struct ChatPaneView: View {
                         },
                         onShowSubagent: onShowSubagent
                     )
-                        .background(rowHeightReader(message.id))
                         .transition(.asymmetric(
                             insertion: .opacity.combined(with: .offset(y: 8)),
                             removal: .opacity
                         ))
-                }
-                if resolvedLayout.bottomInset > 0 {
-                    // 底部占位（镜像）：顶替 range 之后所有行的总高。
-                    Color.clear.frame(height: resolvedLayout.bottomInset)
                 }
                 if shouldShowThinkingIndicator {
                     ThinkingIndicatorBubble()
@@ -162,13 +124,6 @@ struct ChatPaneView: View {
                         )
                     })
             }
-            // 滚动偏移上报：内容(VStack)顶相对视口顶滚过的距离,驱动虚拟化区间重算。
-            .background(GeometryReader { content in
-                Color.clear.preference(
-                    key: ChatContentOffsetKey.self,
-                    value: -content.frame(in: .named(Self.scrollSpace)).minY
-                )
-            })
             .padding(18)
             .animation(.spring(response: 0.34, dampingFraction: 0.86), value: session.messages.count)
             .animation(.spring(response: 0.34, dampingFraction: 0.86), value: shouldShowThinkingIndicator)
@@ -178,59 +133,20 @@ struct ChatPaneView: View {
         .defaultScrollAnchor(.bottom)
         // 进入/切换不同会话时重建滚动视图，确保每次点进都从最新（底部）开始，而非上次的位置。
         .id(session.id)
-        // 切换会话时重置虚拟化状态并立即铺出确定性尾部布局（@State 不随上面的 .id 重建）。
-        .onChange(of: session.id) { _, _ in
-            measuredHeights = [:]
-            rowEstimates = [:]
-            initializeTailLayout(viewport: outer.size.height, proxy: proxy)
-        }
-        // 首开：确定性铺尾部布局——首帧渲染与随后的偏移上报同坐标系，
-        // 不经历多帧收敛，defaultScrollAnchor(.bottom) 的锚定不会被掀翻。
-        .onAppear {
-            initializeTailLayout(viewport: outer.size.height, proxy: proxy)
-        }
-        // 消息总数变化：自己发消息跳到底（消息可能在视口外，用户会以为没发出去）；
-        // 从空载入（重开会话异步回填转录）重新铺尾部布局；
-        // 其余情况重算布局即可——翻历史中新消息只是底部占位变高，零打扰。
-        .onChange(of: session.messages.count) { oldCount, newCount in
-            if newCount > oldCount, oldCount == 0 || session.messages.last?.role == .user {
-                initializeTailLayout(viewport: outer.size.height, proxy: proxy)
-            } else {
-                updateVirtualLayout(offset: lastOffset, viewport: outer.size.height)
-            }
-        }
+        // 切换会话时收回尾部窗口（@State 不随上面的 .id 重建）。
+        .onChange(of: session.id) { _, _ in transcriptLimit = TranscriptWindow.defaultLimit }
         .onPreferenceChange(ChatBottomVisibleKey.self) { atBottom = $0 }
-        // 滚动偏移变化 → 重算真身渲染区间。无 scrollTo、无冷却:滚动手感与原生一致,
-        // 只是滚远的行悄悄换成等高占位、滚近的行换回真身。
-        // 主通道(macOS 15+):onScrollGeometryChange 逐帧上报;preference 仅作 14 兜底。
-        .modifier(ScrollOffsetWatcher { offset in
-            lastOffset = offset
-            updateVirtualLayout(offset: offset, viewport: outer.size.height)
-        })
-        .onPreferenceChange(ChatContentOffsetKey.self) { offset in
-            lastOffset = offset
-            updateVirtualLayout(offset: offset, viewport: outer.size.height)
-        }
-        // 真身行实测高度回填:此后该行的占位用精确值,占位⇄真身切换高度无损。
-        .onPreferenceChange(RowHeightsKey.self) { reported in
-            var changed = false
-            for (id, height) in reported where measuredHeights[id] != height {
-                measuredHeights[id] = height
-                changed = true
-            }
-            if changed { updateVirtualLayout(offset: lastOffset, viewport: outer.size.height) }
+        // 上滑几乎到顶 → 自动放出下一批更早消息。注意 defaultScrollAnchor(.bottom)
+        // 只在贴底时保持距底偏移；翻历史时保持的是「距顶偏移」，释放后必须把原首条
+        // 钉回视口顶（见 releaseOlderMessages），否则视口压进新内容会连锁触发直至全量展开。
+        .onPreferenceChange(ChatTopDistanceKey.self) { distance in
+            guard distance > -TranscriptWindow.releaseDistance else { return }
+            releaseOlderMessages(proxy)
         }
         // 侧栏开/合会改列宽并重排聊天：仅当本就贴底时，逐帧把视图保持贴底（无动画，故不会上下乱滚）。
         .onChange(of: sidebarVisible) { _, _ in keepPinnedToBottomIfNeeded(proxy) }
-        // 窗口缩放：视口变小时若不重锚,底部最新消息会被推出可视区;列宽变化时旧实测高度
-        // 全部失效(换行变了),清掉等真身重新回填。
-        .onChange(of: outer.size) { oldSize, newSize in
-            if oldSize.width != newSize.width {
-                measuredHeights = [:]
-                updateVirtualLayout(offset: lastOffset, viewport: newSize.height)
-            }
-            keepPinnedToBottomIfNeeded(proxy)
-        }
+        // 窗口缩放（尤其改高度）同理：视口变小时若不重锚，底部最新消息会被推出可视区（内容“不可见”）。
+        .onChange(of: outer.size) { _, _ in keepPinnedToBottomIfNeeded(proxy) }
         // 菜单打开时，聊天区覆盖一层透明遮罩：点击列表外即关闭菜单。
         .overlay {
             if composerMenuOpen {
@@ -283,110 +199,58 @@ struct ChatPaneView: View {
         }
     }
 
-    /// 当前生效的虚拟化布局：「全部展开」全量真身；否则用 @State 布局并对当前消息数组
-    /// 夹紧（未初始化/越界回落到尾部兜底，下一次 offset 上报即精确化）。
-    private var resolvedLayout: TranscriptWindow.VirtualLayout {
-        let count = session.messages.count
-        if expandAllHistory {
-            return TranscriptWindow.VirtualLayout(range: 0..<count, topInset: 0, bottomInset: 0)
-        }
-        let layout = virtualLayout
-        guard !layout.range.isEmpty, layout.range.upperBound <= count else {
-            let lo = max(0, count - TranscriptWindow.initialRowCount)
-            // 兜底 topInset 用粗略行高,首帧定位即可;offset 一上报就被精确布局替换。
-            return TranscriptWindow.VirtualLayout(
-                range: lo..<count,
-                topInset: lo > 0 ? CGFloat(lo) * 72 : 0,
-                bottomInset: 0
-            )
-        }
-        return layout
+    private var transcriptSlice: (hiddenCount: Int, visibleStart: Int) {
+        TranscriptWindow.slice(
+            totalCount: session.messages.count,
+            // 「默认全部展开」打开时跳过尾部窗口:hiddenCount 恒 0,哨兵与自动释放自然失效。
+            // 代价是首帧需测量全部气泡高度(#2 的根因),长会话打开会明显变慢。
+            limit: expandAllHistory ? Int.max : transcriptLimit
+        )
     }
 
     private var visibleMessages: ArraySlice<ChatMessage> {
-        session.messages[resolvedLayout.range]
+        session.messages[transcriptSlice.visibleStart...]
     }
 
-    /// 各行高度快照：实测优先，否则按字数估算（缓存，字数变了才重算——流式增长跟随）。
-    private func rowHeightsSnapshot() -> [CGFloat] {
-        let messages = session.messages
-        var heights = [CGFloat]()
-        heights.reserveCapacity(messages.count)
-        for message in messages {
-            if let measured = measuredHeights[message.id] {
-                heights.append(measured)
-                continue
-            }
-            let chars = message.text.count
-            if let cached = rowEstimates[message.id], cached.chars == chars {
-                heights.append(cached.height)
-                continue
-            }
-            let newlines = message.text.reduce(into: 0) { if $1 == "\n" { $0 += 1 } }
-            let estimate = TranscriptWindow.estimatedRowHeight(characterCount: chars, newlineCount: newlines)
-            rowEstimates[message.id] = RowEstimate(chars: chars, height: estimate)
-            heights.append(estimate)
-        }
-        return heights
-    }
-
-    /// 重算虚拟化布局（滚动偏移驱动）。钉底护航期内忽略偏移、维持确定性尾部布局。
-    private func updateVirtualLayout(offset: CGFloat, viewport: CGFloat) {
-        guard !expandAllHistory else { return }
-        if Date() < pinHoldUntil {
-            applyTailLayout(viewport: viewport)
-            return
-        }
-        let layout = TranscriptWindow.virtualLayout(
-            rowHeights: rowHeightsSnapshot(),
-            offset: offset,
-            viewportHeight: viewport
+    /// 放出下一批更早消息，并把释放前的首条消息**无动画钉回视口顶**——
+    /// 新批次留在视口上方等用户继续上滑，而不是让视口滑进新内容（那会连锁触发到全量展开）。
+    /// 250ms 冷却让上一批 TextKit 布局落定。
+    private func releaseOlderMessages(_ proxy: ScrollViewProxy) {
+        guard transcriptSlice.hiddenCount > 0 else { return }
+        let now = Date()
+        guard now.timeIntervalSince(lastAutoRelease) > 0.25 else { return }
+        lastAutoRelease = now
+        let anchorID = visibleMessages.first?.id
+        transcriptLimit = TranscriptWindow.scrollExpandedLimit(
+            current: transcriptLimit,
+            totalCount: session.messages.count
         )
-        if layout != virtualLayout { virtualLayout = layout }
-    }
-
-    /// 确定性尾部布局：铺出尾部区间，并把贴底偏移预置为「最近偏移」——
-    /// 渲染坐标系与偏移上报一步对齐，不经历多帧收敛。
-    private func applyTailLayout(viewport: CGFloat) {
-        let (layout, bottomOffset) = TranscriptWindow.tailLayout(
-            rowHeights: rowHeightsSnapshot(),
-            viewportHeight: viewport
-        )
-        lastOffset = bottomOffset
-        if layout != virtualLayout { virtualLayout = layout }
-    }
-
-    /// 打开/切换/转录回填：铺尾部布局 + 开启护航期 + 多帧钉底。
-    private func initializeTailLayout(viewport: CGFloat, proxy: ScrollViewProxy) {
-        guard !expandAllHistory else { return }
-        applyTailLayout(viewport: viewport)
-        pinHoldUntil = Date().addingTimeInterval(0.35)
-        pinAfterReflow(proxy, to: Self.bottomAnchorID, anchor: .bottom, frames: 8)
-    }
-
-    /// 真身行的高度上报（背景测量,不影响布局）。
-    private func rowHeightReader(_ id: ChatMessage.ID) -> some View {
-        GeometryReader { geo in
-            Color.clear.preference(key: RowHeightsKey.self, value: [id: geo.size.height])
-        }
-    }
-
-    /// 仅当用户本就贴底时把视图重新钉底（侧栏开合/窗口缩放/聊天框高度变化共用）。
-    /// 关键：无动画 scrollTo——内容重排时底部始终被钉住；翻历史时完全不打扰。
-    private func keepPinnedToBottomIfNeeded(_ proxy: ScrollViewProxy) {
-        guard atBottom else { return }
-        pinAfterReflow(proxy, to: Self.bottomAnchorID, anchor: .bottom)
-    }
-
-    /// 多帧无动画锚定：重排后每 30ms 钉一次直到布局落定。常规重排 2 帧足够；
-    /// 首开/转录回填期间内容总高连续收敛,需更长的护航(8 帧 ≈ 240ms)。
-    private func pinAfterReflow(_ proxy: ScrollViewProxy, to id: some Hashable, anchor: UnitPoint, frames: Int = 2) {
+        guard let anchorID else { return }
         Task { @MainActor in
-            for _ in 0..<frames {
+            // 双帧锚定（同 keepPinnedToBottomIfNeeded）：等新批次布局落定后再钉一次兜底。
+            for _ in 0..<2 {
                 await Task.yield()
                 var transaction = Transaction()
                 transaction.disablesAnimations = true
-                withTransaction(transaction) { proxy.scrollTo(id, anchor: anchor) }
+                withTransaction(transaction) { proxy.scrollTo(anchorID, anchor: .top) }
+                try? await Task.sleep(for: .milliseconds(30))
+            }
+        }
+    }
+
+    /// 仅当用户本就贴底时，在侧栏宽度动画(≈0.28s)期间逐帧把视图保持在底部。
+    /// 关键：用**无动画**的 scrollTo——内容随列宽重排时底部始终被钉住，看起来是「内容贴着底不动」，
+    /// 而非之前那种带动画的来回滚动。若用户在上翻看历史（非贴底），则完全不打扰。
+    private func keepPinnedToBottomIfNeeded(_ proxy: ScrollViewProxy) {
+        guard atBottom else { return }
+        // 中间栏现在是「瞬变」重排（一次性、无动画），故只需在重排稳定后**无动画**地锚一次（再补一帧兜底），
+        // 不再用逐帧 scrollTo 追逐动画中的底部——那正是之前跳动/抖动的来源。
+        Task { @MainActor in
+            for _ in 0..<2 {
+                await Task.yield()
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom) }
                 try? await Task.sleep(for: .milliseconds(30))
             }
         }
