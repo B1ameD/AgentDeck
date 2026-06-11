@@ -117,10 +117,11 @@ public final class WorkspaceFileIndex {
     private struct Entry {
         var snapshot: WorkspaceFileSnapshot
         var version: Int
+        var dirty = false
     }
 
     private var cache: [String: Entry] = [:]
-    /// 单调递增的版本号：任一目录快照重建/失效即自增。
+    /// 单调递增的版本号：任一目录快照**内容变化**时自增。
     private var globalVersion = 0
 
     /// `ttl` 保留为兼容测试/旧调用；索引不再按时间在渲染路径自动过期，避免滚动时主线程递归枚举项目。
@@ -137,23 +138,39 @@ public final class WorkspaceFileIndex {
         ensureFresh(directory).version
     }
 
-    /// 失效某目录索引（如 agent 跑完产生新文件后调用），下次访问会重建并提升版本号。
+    /// 标记某目录索引待刷新（如 agent 跑完后调用）。下次访问重建快照；
+    /// **内容没变则版本号不动**——版本号进了每条消息的 renderKey,无谓 bump 会让
+    /// 所有可见气泡全量重设文本:正在进行的选中被刷掉、链接闪烁(#6 不稳定根因)。
     public func invalidate(_ directory: URL) {
-        cache[key(for: directory)] = nil
-        globalVersion += 1
+        cache[key(for: directory)]?.dirty = true
     }
 
     public func invalidateAll() {
-        cache.removeAll()
-        globalVersion += 1
+        for cacheKey in cache.keys {
+            cache[cacheKey]?.dirty = true
+        }
     }
 
     private func ensureFresh(_ directory: URL) -> Entry {
         let cacheKey = key(for: directory)
-        if let entry = cache[cacheKey] {
+        if let entry = cache[cacheKey], !entry.dirty {
             return entry
         }
         let snapshot = WorkspaceFileSnapshot.build(directory: directory)
+        if var entry = cache[cacheKey] {
+            // 瞬态枚举失败会返回空快照:目录仍在且旧快照非空时保留旧值,避免链接集体消失。
+            let transientFailure = snapshot.relativePaths.isEmpty
+                && !entry.snapshot.relativePaths.isEmpty
+                && FileManager.default.fileExists(atPath: directory.standardizedFileURL.path)
+            if !transientFailure, entry.snapshot != snapshot {
+                globalVersion += 1
+                entry.snapshot = snapshot
+                entry.version = globalVersion
+            }
+            entry.dirty = false
+            cache[cacheKey] = entry
+            return entry
+        }
         globalVersion += 1
         let entry = Entry(snapshot: snapshot, version: globalVersion)
         cache[cacheKey] = entry

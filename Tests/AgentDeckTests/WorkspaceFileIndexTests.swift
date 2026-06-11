@@ -84,7 +84,7 @@ final class WorkspaceFileIndexTests: XCTestCase {
     }
 
     @MainActor
-    func testIndexCacheBumpsVersionOnInvalidate() throws {
+    func testIndexVersionStableWhenInvalidateFindsNoChanges() throws {
         let root = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: root) }
         try write("a", to: root.appending(path: "a.txt"))
@@ -92,8 +92,15 @@ final class WorkspaceFileIndexTests: XCTestCase {
         let index = WorkspaceFileIndex()
         let v1 = index.version(for: root)
         XCTAssertEqual(index.version(for: root), v1) // 缓存命中，版本稳定
+
+        // 每轮对话结束都会 invalidate;内容没变就不许 bump——版本进了消息 renderKey,
+        // 无谓 bump 会让全部可见气泡重设文本(清掉选区/链接闪烁,#6 不稳定根因)。
         index.invalidate(root)
-        XCTAssertNotEqual(index.version(for: root), v1) // 失效后重建，版本提升
+        XCTAssertEqual(index.version(for: root), v1, "重建后内容一致 → 版本不动")
+
+        try write("b", to: root.appending(path: "b.txt"))
+        index.invalidate(root)
+        XCTAssertNotEqual(index.version(for: root), v1, "内容真变了 → 版本提升")
     }
 
     @MainActor

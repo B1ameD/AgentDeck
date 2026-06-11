@@ -459,7 +459,20 @@ private struct SelectableMarkdownText: NSViewRepresentable {
                     snapshot: snapshot
                 )
             }
+            // 重设文本默认清空选择——用户正在选中复制时被刷掉即「复制不稳定」(#6)。
+            // 保存选择区并按原始偏移恢复(夹紧到新长度):内容仅尾部追加链接/未变时恢复是精确的。
+            let selectedRanges = textView.selectedRanges
             textView.textStorage?.setAttributedString(rendered.text)
+            let newLength = rendered.text.length
+            let restored = selectedRanges.compactMap { value -> NSValue? in
+                let range = value.rangeValue
+                guard range.length > 0, range.location != NSNotFound, range.location < newLength else { return nil }
+                return NSValue(range: NSRange(
+                    location: range.location,
+                    length: min(range.length, newLength - range.location)
+                ))
+            }
+            if !restored.isEmpty { textView.selectedRanges = restored }
             textView.payloads = rendered.payloads
             textView.renderKey = renderKey
             textView.resetHeightCache() // 内容变了，旧的「按宽度记忆高度」失效
