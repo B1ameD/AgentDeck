@@ -6,6 +6,10 @@ import Foundation
 enum TranscriptWindow {
     /// 默认初始渲染条数;上滑接近窗口顶部时按 scrollReleaseBatch 渐进放出。
     static let defaultLimit = 40
+    /// 设置项「历史会话默认全部展开」：打开后不做尾部窗口截断，打开会话即全量渲染。
+    /// 代价＝首帧成本随历史长度线性增长（#2 的根因）；跨实例高度缓存会软化重复打开。
+    static let expandAllStorageKey = "chat.transcript.expandAll"
+    static let expandAllDefault = false
     /// 每次自动释放的条数:小批量+冷却,渐进展开避免一次性大重排(操作体感,用户反馈)。
     static let scrollReleaseBatch = 10
     /// 触发自动释放的距离:哨兵距视口上沿 80px 内(几乎滚到顶)才放下一批。

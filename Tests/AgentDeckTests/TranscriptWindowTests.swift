@@ -28,6 +28,14 @@ final class TranscriptWindowTests: XCTestCase {
         XCTAssertEqual(hidden, 0)
     }
 
+    func testExpandAllLimitShowsEverythingWithoutOverflow() {
+        // 「历史会话全部展开」开关用 Int.max 旁路窗口:不溢出、零隐藏、从头渲染
+        let (hidden, start) = TranscriptWindow.slice(totalCount: 389, limit: Int.max)
+        XCTAssertEqual(hidden, 0)
+        XCTAssertEqual(start, 0)
+        XCTAssertFalse(TranscriptWindow.expandAllDefault, "默认仍走尾部窗口")
+    }
+
     func testDegenerateLimits() {
         XCTAssertEqual(TranscriptWindow.slice(totalCount: 10, limit: 0).hiddenCount, 9, "limit 夹紧到 ≥1")
         XCTAssertEqual(TranscriptWindow.slice(totalCount: 0, limit: 40).hiddenCount, 0)

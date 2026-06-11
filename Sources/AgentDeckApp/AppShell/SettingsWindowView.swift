@@ -13,6 +13,7 @@ struct SettingsWindowView: View {
     @AppStorage(AppFontSize.storageKey) private var appFontSize = AppFontSize.defaultValue
     @AppStorage(InterfaceFont.storageKey) private var interfaceFontID = InterfaceFont.defaultID
     @AppStorage(CodeBlockTheme.storageKey) private var codeBlockThemeID = CodeBlockTheme.defaultID
+    @AppStorage(TranscriptWindow.expandAllStorageKey) private var expandAllHistory = TranscriptWindow.expandAllDefault
 
     // 常规
     @AppStorage(AgentActivationMode.storageKey) private var agentActivationID = AgentActivationMode.defaultID
@@ -288,6 +289,13 @@ struct SettingsWindowView: View {
                 .labelsHidden()
                 .pickerStyle(.segmented)
                 .frame(width: controlWidth, alignment: .trailing)
+            }
+
+            settingRow("历史会话全部展开", "打开会话即渲染全部历史消息，不再折叠为「最近 \(TranscriptWindow.defaultLimit) 条+上滑加载」。长会话首次打开会明显变慢。") {
+                Toggle("", isOn: $expandAllHistory)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .frame(width: controlWidth, alignment: .trailing)
             }
         }
     }

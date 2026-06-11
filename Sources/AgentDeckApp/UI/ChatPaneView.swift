@@ -43,6 +43,8 @@ struct ChatPaneView: View {
     @State private var lastAutoRelease = Date.distantPast
     /// 聊天框当前高度（随输入行数变化）。用于在它长高/收缩时把贴底的视图重新钉底（#3）。
     @State private var composerHeight: CGFloat = 0
+    /// 设置项：历史会话默认全部展开（不做尾部窗口截断）。
+    @AppStorage(TranscriptWindow.expandAllStorageKey) private var expandAllHistory = TranscriptWindow.expandAllDefault
 
     /// 聊天列表底部锚点 id（滚动到最新消息用）。
     private static let bottomAnchorID = "agentdeck.chat.bottomAnchor"
@@ -198,7 +200,12 @@ struct ChatPaneView: View {
     }
 
     private var transcriptSlice: (hiddenCount: Int, visibleStart: Int) {
-        TranscriptWindow.slice(totalCount: session.messages.count, limit: transcriptLimit)
+        TranscriptWindow.slice(
+            totalCount: session.messages.count,
+            // 「默认全部展开」打开时跳过尾部窗口:hiddenCount 恒 0,哨兵与自动释放自然失效。
+            // 代价是首帧需测量全部气泡高度(#2 的根因),长会话打开会明显变慢。
+            limit: expandAllHistory ? Int.max : transcriptLimit
+        )
     }
 
     private var visibleMessages: ArraySlice<ChatMessage> {
