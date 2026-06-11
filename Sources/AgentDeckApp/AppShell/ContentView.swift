@@ -512,7 +512,7 @@ struct ContentView: View {
 
 // 组件已拆分至独立文件(#24):
 // SidebarRailViews.swift(RailSectionLabel/RailActionButton/RecentConversationRow)、
-// AgentTabRow.swift、AgentPageHeader.swift(含 HeaderIconButton/SessionHistoryMenu)、
+// AgentTabRow.swift、AgentPageHeader.swift(含 HeaderIconButton)、
 // ContentViewChrome.swift(EmptyRegistryView/GlassBackground)。
 
 #Preview {
