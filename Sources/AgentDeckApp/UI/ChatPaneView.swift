@@ -8,9 +8,29 @@ private struct ChatBottomVisibleKey: PreferenceKey {
 }
 
 /// 转录内容顶部相对视口顶的滚动偏移（≥0＝已向下滚多少）。占位虚拟化据此算可见行区间。
+/// 仅作 macOS 14 兜底——GeometryReader+preference 在滚动期间的触发不可靠（实测滚动时
+/// 不上报,虚拟化区间冻结）；macOS 15+ 走 ScrollOffsetWatcher(onScrollGeometryChange)。
 private struct ChatContentOffsetKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+}
+
+/// 滚动偏移主通道：onScrollGeometryChange 是滚动几何变化的官方回调,
+/// 滚轮/拖滚动条/惯性滚动逐帧触发,不依赖 preference 链路。
+private struct ScrollOffsetWatcher: ViewModifier {
+    let onOffsetChange: (CGFloat) -> Void
+
+    func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) {
+            content.onScrollGeometryChange(for: CGFloat.self) { geometry in
+                geometry.visibleRect.minY
+            } action: { _, newValue in
+                onOffsetChange(newValue)
+            }
+        } else {
+            content
+        }
+    }
 }
 
 /// 真身渲染中的各行实测高度（消息 id → 高度）。回填进测量表后，
@@ -182,6 +202,11 @@ struct ChatPaneView: View {
         .onPreferenceChange(ChatBottomVisibleKey.self) { atBottom = $0 }
         // 滚动偏移变化 → 重算真身渲染区间。无 scrollTo、无冷却:滚动手感与原生一致,
         // 只是滚远的行悄悄换成等高占位、滚近的行换回真身。
+        // 主通道(macOS 15+):onScrollGeometryChange 逐帧上报;preference 仅作 14 兜底。
+        .modifier(ScrollOffsetWatcher { offset in
+            lastOffset = offset
+            updateVirtualLayout(offset: offset, viewport: outer.size.height)
+        })
         .onPreferenceChange(ChatContentOffsetKey.self) { offset in
             lastOffset = offset
             updateVirtualLayout(offset: offset, viewport: outer.size.height)
