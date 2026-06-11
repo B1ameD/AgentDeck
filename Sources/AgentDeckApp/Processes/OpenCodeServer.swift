@@ -47,13 +47,15 @@ actor OpenCodeServer {
         if let cachedBaseURL, process?.isRunning == true {
             return cachedBaseURL
         }
-        // 之前起过但已退出：清掉缓存，重新启动。
-        cachedBaseURL = nil
-        process = nil
-
+        // 启动进行中：直接共享同一次启动，不能先清状态——actor 可重入，
+        // 在 launch 的探活轮询期间清掉它已设好的 process，会让探活误判
+        // 「opencode serve 启动后立即退出」，并发首调集体回退非流式（#34）。
         if let startTask {
             return try await startTask.value
         }
+        // 之前起过但已退出：清掉缓存，重新启动。
+        cachedBaseURL = nil
+        process = nil
 
         let task = Task { try await self.launch(executable: executable, environment: environment) }
         startTask = task
@@ -69,8 +71,10 @@ actor OpenCodeServer {
         }
     }
 
-    /// 仅供测试/退出清理：终止服务进程。
+    /// 仅供测试/退出清理：终止服务进程；在途启动一并取消（launch 的 catch 会回收已 spawn 的进程）。
     func shutdown() {
+        startTask?.cancel()
+        startTask = nil
         process?.terminate()
         process = nil
         cachedBaseURL = nil
@@ -129,6 +133,7 @@ actor OpenCodeServer {
         let probe = base.appendingPathComponent("doc")
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
+            try Task.checkCancellation() // shutdown 取消在途启动时尽快退出（URLSession/sleep 的取消会被下面吞掉）
             if process?.isRunning != true {
                 throw OpenCodeStreamingError.unavailable("opencode serve 启动后立即退出")
             }
