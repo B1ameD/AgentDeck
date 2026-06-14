@@ -36,7 +36,7 @@ public enum CLIInvocationBuilder {
                 attachments, sessionID, externalSessionID, resumeSessionID, mcpAskEndpoint
             )
         case .openCode:
-            return opencode(agent, prompt, model, reasoningEffort, command, attachments, externalSessionID, conversationTitle)
+            return opencode(agent, prompt, model, reasoningEffort, interactionMode, command, attachments, externalSessionID, conversationTitle)
         case .codex:
             return codex(
                 agent, prompt, model, reasoningEffort, interactionMode,
@@ -85,11 +85,11 @@ public enum CLIInvocationBuilder {
         }
         switch mode {
         case .plan:
+            // 原生 plan 权限模式（硬只读）+ 提示词兜底。claude --permission-mode 合法取值含 plan。
+            // 若 -p 非交互下 plan 行为不可靠，回退把 "plan" 改回 "bypassPermissions" 即恢复软约束。
             args += ["--permission-mode", "plan"]
+            args += ["--append-system-prompt", mode.planModeHint!]
         case .build:
-            // AgentDeck 以 `-p` 非交互方式运行 Claude Code，Claude 自己的审批提示
-            // 无法回传到我们的 SwiftUI 弹窗；Build 仍经过 AgentDeck 自己的权限确认，
-            // 通过后使用 Claude 的 bypassPermissions 模式执行。
             args += ["--permission-mode", "bypassPermissions"]
         }
         switch command {
@@ -115,11 +115,13 @@ public enum CLIInvocationBuilder {
 
     // MARK: - OpenCode（已核实：run -m provider/model / --variant / -c / -s / -f 本地附件）
 
+    // swiftlint:disable:next function_parameter_count
     private static func opencode(
         _ agent: AgentConfig,
         _ prompt: String,
         _ model: String,
         _ effort: ReasoningEffort,
+        _ mode: InteractionMode,
         _ command: AgentCommand,
         _ attachments: [URL],
         _ externalSessionID: String?,
@@ -129,8 +131,6 @@ public enum CLIInvocationBuilder {
 
         if agent.outputMode == .jsonLines {
             args += ["--format", "json"]
-            // OpenCode 的 raw JSON 只有显式开启 --thinking 才会 emit reasoning part；
-            // parser 已把 reasoning part 折叠成「思考过程」。
             args += ["--thinking"]
         }
         if let model = normalizedModel(model) {
@@ -142,10 +142,8 @@ public enum CLIInvocationBuilder {
         case .medium:
             break
         case .high, .xhigh, .max:
-            // opencode 仅有 minimal/high 档；xhigh/max 一并夹到 high。
             args += ["--variant", "high"]
         }
-        // opencode run 无 permission-mode，plan/build 暂不映射。
         switch command {
         case .new:
             if let id = normalized(externalSessionID) {
@@ -160,16 +158,20 @@ public enum CLIInvocationBuilder {
                 args += ["-c"]
             }
         }
-        // opencode 原生支持本地附件 -f <path>，无需并入 prompt。
         for url in attachments {
             args += ["-f", url.path]
         }
         if !attachments.isEmpty {
-            // OpenCode 的 -f 是 array flag，会吞后续 positional prompt；-- 显式终止解析。
             args += ["--"]
         }
 
-        return place(prompt: prompt, into: agent, args: args)
+        let finalPrompt: String
+        if let hint = mode.planModeHint {
+            finalPrompt = hint + "\n\n" + prompt
+        } else {
+            finalPrompt = prompt
+        }
+        return place(prompt: finalPrompt, into: agent, args: args)
     }
 
     // MARK: - Codex（本机未安装，未验证；按 `codex exec` 已知约定实现）
@@ -205,30 +207,30 @@ public enum CLIInvocationBuilder {
         args += ["--skip-git-repo-check"]
         switch mode {
         case .plan:
-            // 只读沙箱＝计划模式:可读不可写,模型给出方案而非直接动手。
             args += ["--sandbox", "read-only"]
         case .build:
-            // 与 claude 的 bypassPermissions 语义对齐:AgentDeck 自己的权限门通过后全放行。
-            // 不取 workspace-write 中间档——其沙箱默认断网,npm/curl 等会莫名失败更难排查。
             args += ["--dangerously-bypass-approvals-and-sandbox"]
         }
         if let endpoint = mcpAskEndpoint {
-            // codex 原生支持 streamable HTTP MCP(mcp_servers.<name>.url)。
-            // -c 的值先按 TOML 解析,URL 解析失败正好按字面字符串处理。
             args += ["-c", "mcp_servers.agentdeck.url=\(endpoint)"]
         }
         if let model = normalizedModel(model) {
             args += ["-m", model]
         }
         if effort != .medium {
-            // codex 通过配置覆盖设置推理强度（未在本机验证）。
             args += ["-c", "model_reasoning_effort=\(effort.rawValue)"]
         }
         if case .new = command, let id = normalized(externalSessionID) {
             args += [id]
         }
 
-        return place(prompt: promptWithAttachments(prompt, attachments), into: agent, args: args)
+        let finalPrompt: String
+        if let hint = mode.planModeHint {
+            finalPrompt = hint + "\n\n" + promptWithAttachments(prompt, attachments)
+        } else {
+            finalPrompt = promptWithAttachments(prompt, attachments)
+        }
+        return place(prompt: finalPrompt, into: agent, args: args)
     }
 
     // MARK: - 通用透传（pi / custom）

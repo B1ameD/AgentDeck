@@ -285,6 +285,48 @@ final class OpenCodeStreamingTests: XCTestCase {
     }
 
     @MainActor
+    func testOpenCodePlanModeInjectsHintIntoStreamingPrompt() async {
+        let streamer = FakeOpenCodeStreamer(.yield([
+            #"{"type":"step_start","sessionID":"ses_plan","part":{}}"#,
+            #"{"type":"text","sessionID":"ses_plan","part":{"type":"text","text":"ok"}}"#
+        ]))
+        let session = AgentSession(
+            agent: Self.openCodeConfig(),
+            workingDirectory: FileManager.default.temporaryDirectory,
+            runner: StubRunner(stdout: "X"),
+            openCodeStreamer: streamer
+        )
+        session.interactionMode = .plan
+
+        await session.send("分析这段代码")
+
+        // 流式（默认生产路径）不经过 CLIInvocationBuilder，必须在此注入 planModeHint，
+        // 否则切 plan 对流式 opencode 是空操作。
+        let prompt = streamer.firstRequest?.prompt ?? ""
+        XCTAssertTrue(prompt.contains("[Plan Mode]"))
+        XCTAssertTrue(prompt.hasSuffix("分析这段代码"))
+    }
+
+    @MainActor
+    func testOpenCodeBuildModeStreamingPromptHasNoHint() async {
+        let streamer = FakeOpenCodeStreamer(.yield([
+            #"{"type":"step_start","sessionID":"ses_build","part":{}}"#,
+            #"{"type":"text","sessionID":"ses_build","part":{"type":"text","text":"ok"}}"#
+        ]))
+        let session = AgentSession(
+            agent: Self.openCodeConfig(),
+            workingDirectory: FileManager.default.temporaryDirectory,
+            runner: StubRunner(stdout: "X"),
+            openCodeStreamer: streamer
+        )
+        session.interactionMode = .build
+
+        await session.send("继续")
+
+        XCTAssertEqual(streamer.firstRequest?.prompt, "继续")
+    }
+
+    @MainActor
     func testOpenCodeQuestionAskedRendersCardAndAnswerRepliesInSession() async throws {
         let streamer = FakeOpenCodeStreamer(.yield([
             #"{"type":"step_start","sessionID":"ses_abc","part":{}}"#,

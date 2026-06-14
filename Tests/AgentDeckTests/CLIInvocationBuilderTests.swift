@@ -15,10 +15,29 @@ final class CLIInvocationBuilderTests: XCTestCase {
             attachments: []
         )
 
-        XCTAssertEqual(invocation, CLIInvocation(
-            arguments: ["-p", "--model", "sonnet", "--effort", "high", "--permission-mode", "plan", "--continue", "do it"],
-            stdin: nil
-        ))
+        XCTAssertEqual(invocation.arguments.prefix(7), ["-p", "--model", "sonnet", "--effort", "high", "--permission-mode", "plan"])
+        XCTAssertEqual(invocation.arguments[7], "--append-system-prompt")
+        XCTAssertTrue(invocation.arguments[8].contains("[Plan Mode]"))
+        XCTAssertEqual(invocation.arguments.suffix(2), ["--continue", "do it"])
+        XCTAssertNil(invocation.stdin)
+    }
+
+    func testClaudePlanModeUsesNativePlanPermissionMode() {
+        let invocation = CLIInvocationBuilder.build(
+            agent: config(id: "claude-code", args: ["-p"], inputMode: .oneShotArgument),
+            prompt: "plan it",
+            model: "default",
+            reasoningEffort: .medium,
+            interactionMode: .plan,
+            command: .new,
+            attachments: []
+        )
+        // plan 用原生只读权限模式（非 bypassPermissions），并保留提示词兜底。
+        XCTAssertEqual(invocation.arguments.prefix(3), ["-p", "--permission-mode", "plan"])
+        XCTAssertEqual(invocation.arguments[3], "--append-system-prompt")
+        XCTAssertTrue(invocation.arguments[4].contains("[Plan Mode]"))
+        XCTAssertFalse(invocation.arguments.contains("bypassPermissions"))
+        XCTAssertEqual(invocation.arguments.last, "plan it")
     }
 
     func testClaudeBuildModeBypassesPermissionsForNonInteractiveRuns() {
@@ -240,10 +259,12 @@ final class CLIInvocationBuilderTests: XCTestCase {
             command: .new,
             attachments: []
         )
-        XCTAssertEqual(invocation, CLIInvocation(
-            arguments: ["exec", "--json", "--skip-git-repo-check", "--sandbox", "read-only", "plan it"],
-            stdin: nil
-        ))
+        XCTAssertEqual(invocation.arguments.prefix(4), ["exec", "--json", "--skip-git-repo-check", "--sandbox"])
+        XCTAssertEqual(invocation.arguments[4], "read-only")
+        let prompt = invocation.arguments.last!
+        XCTAssertTrue(prompt.contains("[Plan Mode]"))
+        XCTAssertTrue(prompt.hasSuffix("plan it"))
+        XCTAssertNil(invocation.stdin)
     }
 
     func testCodexInjectsAskUserMCPEndpoint() {
@@ -275,6 +296,23 @@ final class CLIInvocationBuilderTests: XCTestCase {
             )
             XCTAssertEqual(invocation, CLIInvocation(arguments: ["run", "--variant", "high", "go"], stdin: nil))
         }
+    }
+
+    func testOpenCodePlanModePrependsHintToPrompt() {
+        let invocation = CLIInvocationBuilder.build(
+            agent: config(id: "opencode", args: ["run"], inputMode: .oneShotArgument, outputMode: .jsonLines),
+            prompt: "analyze this",
+            model: "default",
+            reasoningEffort: .medium,
+            interactionMode: .plan,
+            command: .new,
+            attachments: []
+        )
+        XCTAssertEqual(invocation.arguments.prefix(3), ["run", "--format", "json"])
+        let prompt = invocation.arguments.last!
+        XCTAssertTrue(prompt.contains("[Plan Mode]"))
+        XCTAssertTrue(prompt.hasSuffix("analyze this"))
+        XCTAssertNil(invocation.stdin)
     }
 
     // MARK: - Pi / Custom（不注入任何未知 flag）

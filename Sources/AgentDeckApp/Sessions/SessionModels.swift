@@ -210,6 +210,20 @@ public enum InteractionMode: String, CaseIterable, Equatable, Sendable {
     public static func restore(_ storedValue: String?) -> InteractionMode {
         storedValue == plan.rawValue ? .plan : .build
     }
+
+    public var planModeHint: String? {
+        switch self {
+        case .plan:
+            return """
+            [Plan Mode] You are currently in PLAN MODE (read-only planning phase). \
+            You may read any files to understand the codebase, but you MUST NOT modify, create, or delete any files. \
+            Provide a detailed plan, analysis, or recommendations instead of making changes. \
+            When the user is ready to implement, they will switch to Build Mode.
+            """
+        case .build:
+            return nil
+        }
+    }
 }
 
 public enum AgentCommand: String, CaseIterable, Equatable, Sendable {

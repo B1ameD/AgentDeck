@@ -110,14 +110,14 @@ final class SlashCommandTests: XCTestCase {
             SlashCommandMenu.availableCommands(for: agent(id: "claude-code")).map(\.token),
             ["/new", "/resume", "/continue", "/compact", "/login", "/model", "/plan", "/build", "/stop", "/clear"]
         )
-        // codex / opencode 没有 --permission-mode，去掉 plan/build。
+        // codex（--sandbox）/ opencode（提示注入）都已支持 plan/build，仅 /login 仍是 claude 专属。
         XCTAssertEqual(
             SlashCommandMenu.availableCommands(for: agent(id: "codex")).map(\.token),
-            ["/new", "/resume", "/continue", "/compact", "/model", "/stop", "/clear"]
+            ["/new", "/resume", "/continue", "/compact", "/model", "/plan", "/build", "/stop", "/clear"]
         )
         XCTAssertEqual(
             SlashCommandMenu.availableCommands(for: agent(id: "opencode")).map(\.token),
-            ["/new", "/resume", "/continue", "/compact", "/model", "/stop", "/clear"]
+            ["/new", "/resume", "/continue", "/compact", "/model", "/plan", "/build", "/stop", "/clear"]
         )
         // pi / custom 走透传，不注入任何 flag，只剩应用层动作。
         XCTAssertEqual(SlashCommandMenu.availableCommands(for: agent(id: "pi-local")).map(\.token), ["/compact", "/stop", "/clear"])
@@ -141,11 +141,12 @@ final class SlashCommandTests: XCTestCase {
 
     func testResolveFiltersCommandTokensByAgent() {
         let plan = SlashCommandMenu.all.first { $0.token == "/plan" }!
-        // "/p" 对 claude 给 /plan；对 codex（无 plan）无匹配 → 透传项。
+        // "/p" 对 claude、codex（均支持 plan）都给 /plan；对透传型 agent（pi）无匹配 → 透传项。
         XCTAssertEqual(SlashCommandMenu.resolve(for: "/p", agent: agent(id: "claude-code")), .commands([plan]))
+        XCTAssertEqual(SlashCommandMenu.resolve(for: "/p", agent: agent(id: "codex")), .commands([plan]))
         XCTAssertEqual(
-            SlashCommandMenu.resolve(for: "/p", agent: agent(id: "codex")),
-            .commands([SlashCommand(token: "/p", summary: "发送给 codex（CLI 指令，透传）", action: .passthrough)])
+            SlashCommandMenu.resolve(for: "/p", agent: agent(id: "pi-local")),
+            .commands([SlashCommand(token: "/p", summary: "发送给 pi-local（CLI 指令，透传）", action: .passthrough)])
         )
     }
 

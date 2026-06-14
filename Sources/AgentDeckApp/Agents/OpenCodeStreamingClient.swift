@@ -209,7 +209,7 @@ public final class OpenCodeStreamingClient: OpenCodeStreaming, @unchecked Sendab
     }
 
     private func connectEventStream(base: URL, directory: URL) async throws -> OpenCodeSSEConnection {
-        var request = makeRequest(base.appendingPathComponent("event"), method: "GET", directory: directory, timeout: 600)
+        var request = makeRequest(base.appendingPathComponent("event"), method: "GET", directory: directory, timeout: 0)
         request.setValue("text/event-stream", forHTTPHeaderField: "accept")
 
         let events = AsyncThrowingStream<OpenCodeSSEEvent, Error>.makeStream()
@@ -219,8 +219,8 @@ public final class OpenCodeStreamingClient: OpenCodeStreaming, @unchecked Sendab
             opened: opened.continuation
         )
         let configuration = URLSessionConfiguration.default
-        configuration.timeoutIntervalForRequest = 600
-        configuration.timeoutIntervalForResource = 600
+        configuration.timeoutIntervalForRequest = 0
+        configuration.timeoutIntervalForResource = 0
         let eventSession = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
         let task = eventSession.dataTask(with: request)
         let connection = OpenCodeSSEConnection(
@@ -246,7 +246,7 @@ public final class OpenCodeStreamingClient: OpenCodeStreaming, @unchecked Sendab
         )
         let httpRequest = makeRequest(
             base.appendingPathComponent("session/\(sessionID)/message"),
-            method: "POST", directory: request.workingDirectory, body: body, timeout: 600
+            method: "POST", directory: request.workingDirectory, body: body, timeout: 0
         )
         let (data, response) = try await session.data(for: httpRequest)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {

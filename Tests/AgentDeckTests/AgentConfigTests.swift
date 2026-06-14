@@ -32,6 +32,15 @@ final class AgentConfigTests: XCTestCase {
         XCTAssertEqual(config.stopSignal, .interrupt)
     }
 
+    func testSupportsPlanModeOnlyForBuiltInCodingAgents() {
+        // 内置编码 agent 能落地 plan/build；pi/custom 走透传无法注入 mode 语义。
+        XCTAssertTrue(config(id: "claude-code").supportsPlanMode)
+        XCTAssertTrue(config(id: "codex").supportsPlanMode)
+        XCTAssertTrue(config(id: "opencode").supportsPlanMode)
+        XCTAssertFalse(config(id: "pi-local").supportsPlanMode)
+        XCTAssertFalse(config(id: "my-custom-agent").supportsPlanMode)
+    }
+
     func testValidationRejectsEmptyId() {
         let config = AgentConfig(
             id: "",
@@ -191,6 +200,14 @@ final class AgentConfigTests: XCTestCase {
         )
 
         XCTAssertEqual(config.runtimeEnvironment()["OPENCODE_CONFIG_CONTENT"], #"{"snapshot":true}"#)
+    }
+
+    private func config(id: String) -> AgentConfig {
+        AgentConfig(
+            id: id, name: id, command: "/usr/bin/\(id)", args: [], env: [:],
+            workingDirectoryPolicy: .workspace, inputMode: .oneShotArgument, outputMode: .stream,
+            supportsStop: true, stopSignal: .interrupt
+        )
     }
 
     private func temporaryClaudeSettings(_ json: String) throws -> URL {

@@ -257,15 +257,13 @@ final class AgentSessionTests: XCTestCase {
         await session.send("continue this")
 
         let calls = await runner.calls()
-        XCTAssertEqual(calls.map(\.args), [[
-            "exec",
-            "resume",
-            "--skip-git-repo-check",
-            "--sandbox", "read-only",
-            "-m", "gpt-5",
-            "-c", "model_reasoning_effort=high",
-            "continue this"
-        ]])
+        XCTAssertEqual(calls.count, 1)
+        let args = calls[0].args
+        XCTAssertEqual(args.prefix(7), ["exec", "resume", "--skip-git-repo-check", "--sandbox", "read-only", "-m", "gpt-5"])
+        XCTAssertEqual(args[7], "-c")
+        XCTAssertEqual(args[8], "model_reasoning_effort=high")
+        XCTAssertTrue(args[9].contains("[Plan Mode]"))
+        XCTAssertTrue(args[9].hasSuffix("continue this"))
     }
 
     func testClaudeSendDoesNotPinAgentDeckConversationID() async {

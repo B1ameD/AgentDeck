@@ -535,11 +535,14 @@ public final class AgentSession: Identifiable {
         title: String?
     ) -> OpenCodeStreamSource? {
         guard agent.kind == .openCode, let streamer = openCodeStreamer else { return nil }
+        // plan 模式下流式路径不经过 CLIInvocationBuilder.opencode，需在此处注入 planModeHint，
+        // 与 run 回退路径保持一致；否则切到 plan 对流式 opencode 是空操作。
+        let finalPrompt = interactionMode.planModeHint.map { $0 + "\n\n" + prompt } ?? prompt
         let request = OpenCodeStreamRequest(
             executable: agent.command,
             environment: agent.runtimeEnvironment(),
             workingDirectory: workingDirectory,
-            prompt: prompt,
+            prompt: finalPrompt,
             model: model,
             variant: Self.openCodeVariant(reasoningEffort),
             attachments: attachments,

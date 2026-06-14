@@ -55,8 +55,9 @@ public enum SlashCommandMenu {
             // new/resume/continue 与 model：仅内置编码 agent（claude/codex/opencode）会注入对应 flag。
             return injectsBuiltInFlags(agent.kind)
         case .setMode:
-            // plan/build 映射 --permission-mode，目前仅 claude 支持。
-            return agent.kind == .claudeCode
+            // plan/build 在 claude（--permission-mode）、codex（--sandbox）、opencode（提示注入）
+            // 三家都已落地；pi/custom 走透传无法注入 mode 语义，故按 supportsPlanMode 门控。
+            return agent.supportsPlanMode
         case .claudeLogin:
             return agent.kind == .claudeCode
         case .stop:

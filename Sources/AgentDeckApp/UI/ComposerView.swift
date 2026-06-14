@@ -255,7 +255,12 @@ struct ComposerView: View {
             .foregroundStyle(attachments.isEmpty ? Color.secondary : Theme.accentStrong)
             .help("附加照片/文件 · 屏幕截图")
 
-            ControlChip(text: modeLabel, hint: "Tab 切换模式", action: cycleMode)
+            ControlChip(
+                text: modeLabel,
+                hint: modeHint,
+                isDisabled: !session.agent.supportsPlanMode,
+                action: cycleMode
+            )
             ControlChip(text: modelLabel, hint: modelHint) {
                 prompt = "/model"
                 focusToken += 1
@@ -442,6 +447,22 @@ struct ComposerView: View {
         }
     }
 
+    /// 模式芯片 tooltip：不支持的后端点明「透传无效果」；支持的后端附上 plan 的约束强度，
+    /// 让用户清楚同一个开关在不同 agent 下的实际语义（硬沙箱 / 原生只读 / 提示约束）。
+    private var modeHint: String {
+        guard session.agent.supportsPlanMode else {
+            return "该 agent 不支持 plan/build 模式（透传，无效果）"
+        }
+        let strength: String
+        switch session.agent.kind {
+        case .codex: strength = "Plan=只读沙箱"
+        case .claudeCode: strength = "Plan=只读规划"
+        case .openCode: strength = "Plan=提示约束"
+        case .pi, .custom: strength = ""
+        }
+        return strength.isEmpty ? "Tab 切换模式" : "Tab 切换模式｜\(strength)"
+    }
+
     /// 芯片显示实际解析到的模型（如别名 opus → Opus 4.8）；没捕获到就显示所选模型。
     private var modelLabel: String {
         modelDisplayName(session.resolvedModel ?? session.model)
@@ -466,6 +487,8 @@ struct ComposerView: View {
     }
 
     private func cycleMode() {
+        // pi/custom 无法注入 mode 语义；芯片已灰显，此处再兜住 Tab 键路径（:669 调用 cycleMode）。
+        guard session.agent.supportsPlanMode else { return }
         let modes = InteractionMode.allCases
         if let i = modes.firstIndex(of: session.interactionMode) {
             session.interactionMode = modes[(i + 1) % modes.count]
@@ -713,6 +736,7 @@ private struct ControlChip: View {
     let text: String
     let hint: String
     var isActive: Bool = false
+    var isDisabled: Bool = false
     let action: () -> Void
     @State private var hovering = false
 
@@ -730,8 +754,10 @@ private struct ControlChip: View {
                 .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .disabled(isDisabled)
+        .opacity(isDisabled ? 0.4 : 1)
         .help(hint)
-        .onHover { hovering = $0 }
+        .onHover { hovering = isDisabled ? false : $0 }
         .animation(.easeOut(duration: 0.1), value: hovering)
     }
 }
