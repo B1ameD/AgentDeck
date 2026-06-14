@@ -51,6 +51,9 @@ public struct OpenCodeStreamRequest: Sendable {
     /// 是否展开 reasoning（思考块），与 `opencode run --thinking` 对齐。
     public var thinking: Bool
     public var stopSignal: AgentConfig.StopSignal
+    /// 本轮使用的 opencode 内置 agent：plan 模式传 "plan"（原生禁用所有编辑工具，硬只读），
+    /// build 模式传 nil（用默认 primary build agent）。
+    public var agent: String?
 
     public init(
         executable: String,
@@ -63,7 +66,8 @@ public struct OpenCodeStreamRequest: Sendable {
         continueSessionID: String?,
         title: String?,
         thinking: Bool,
-        stopSignal: AgentConfig.StopSignal
+        stopSignal: AgentConfig.StopSignal,
+        agent: String? = nil
     ) {
         self.executable = executable
         self.environment = environment
@@ -76,6 +80,7 @@ public struct OpenCodeStreamRequest: Sendable {
         self.title = title
         self.thinking = thinking
         self.stopSignal = stopSignal
+        self.agent = agent
     }
 }
 
@@ -242,7 +247,7 @@ public final class OpenCodeStreamingClient: OpenCodeStreaming, @unchecked Sendab
     private func postMessage(base: URL, sessionID: String, request: OpenCodeStreamRequest) async throws {
         let body = OpenCodeStreamWire.messageBody(
             model: request.model, variant: request.variant,
-            prompt: request.prompt, attachments: request.attachments
+            prompt: request.prompt, attachments: request.attachments, agent: request.agent
         )
         let httpRequest = makeRequest(
             base.appendingPathComponent("session/\(sessionID)/message"),
@@ -718,8 +723,11 @@ enum OpenCodeStreamWire {
         return body
     }
 
-    /// 发消息请求体：附件作为 file part 在前、文本 part 在后；模型/变体可选。
-    static func messageBody(model: String, variant: String?, prompt: String, attachments: [URL]) -> [String: Any] {
+    /// 发消息请求体：附件作为 file part 在前、文本 part 在后；模型/变体/agent 可选。
+    /// `agent` 传 "plan" 时本轮走 opencode 原生 plan agent（工具级禁用编辑，硬只读）。
+    static func messageBody(
+        model: String, variant: String?, prompt: String, attachments: [URL], agent: String? = nil
+    ) -> [String: Any] {
         var parts: [[String: Any]] = attachments.map { url in
             let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
             return [
@@ -737,6 +745,9 @@ enum OpenCodeStreamWire {
         }
         if let variant, !variant.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             body["variant"] = variant
+        }
+        if let agent, !agent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            body["agent"] = agent
         }
         return body
     }

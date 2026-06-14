@@ -144,6 +144,10 @@ public enum CLIInvocationBuilder {
         case .high, .xhigh, .max:
             args += ["--variant", "high"]
         }
+        // plan 模式走 opencode 原生 plan agent（工具级禁用编辑，硬只读）；build 用默认 primary agent。
+        if mode == .plan {
+            args += ["--agent", "plan"]
+        }
         switch command {
         case .new:
             if let id = normalized(externalSessionID) {
@@ -165,13 +169,8 @@ public enum CLIInvocationBuilder {
             args += ["--"]
         }
 
-        let finalPrompt: String
-        if let hint = mode.planModeHint {
-            finalPrompt = hint + "\n\n" + prompt
-        } else {
-            finalPrompt = prompt
-        }
-        return place(prompt: finalPrompt, into: agent, args: args)
+        // plan 语义由原生 --agent plan 承担，不再往 prompt 里塞提示词。
+        return place(prompt: prompt, into: agent, args: args)
     }
 
     // MARK: - Codex（本机未安装，未验证；按 `codex exec` 已知约定实现）

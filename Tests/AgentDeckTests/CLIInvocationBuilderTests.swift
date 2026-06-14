@@ -298,7 +298,7 @@ final class CLIInvocationBuilderTests: XCTestCase {
         }
     }
 
-    func testOpenCodePlanModePrependsHintToPrompt() {
+    func testOpenCodePlanModeUsesNativePlanAgent() {
         let invocation = CLIInvocationBuilder.build(
             agent: config(id: "opencode", args: ["run"], inputMode: .oneShotArgument, outputMode: .jsonLines),
             prompt: "analyze this",
@@ -308,11 +308,24 @@ final class CLIInvocationBuilderTests: XCTestCase {
             command: .new,
             attachments: []
         )
-        XCTAssertEqual(invocation.arguments.prefix(3), ["run", "--format", "json"])
-        let prompt = invocation.arguments.last!
-        XCTAssertTrue(prompt.contains("[Plan Mode]"))
-        XCTAssertTrue(prompt.hasSuffix("analyze this"))
+        // plan 走原生 --agent plan（硬只读），不再往 prompt 里塞提示词。
+        XCTAssertEqual(invocation.arguments, ["run", "--format", "json", "--thinking", "--agent", "plan", "analyze this"])
+        XCTAssertFalse((invocation.arguments.last ?? "").contains("[Plan Mode]"))
         XCTAssertNil(invocation.stdin)
+    }
+
+    func testOpenCodeBuildModeHasNoPlanAgent() {
+        let invocation = CLIInvocationBuilder.build(
+            agent: config(id: "opencode", args: ["run"], inputMode: .oneShotArgument, outputMode: .jsonLines),
+            prompt: "do it",
+            model: "default",
+            reasoningEffort: .medium,
+            interactionMode: .build,
+            command: .new,
+            attachments: []
+        )
+        XCTAssertFalse(invocation.arguments.contains("--agent"))
+        XCTAssertEqual(invocation.arguments.last, "do it")
     }
 
     // MARK: - Pi / Custom（不注入任何未知 flag）

@@ -535,21 +535,21 @@ public final class AgentSession: Identifiable {
         title: String?
     ) -> OpenCodeStreamSource? {
         guard agent.kind == .openCode, let streamer = openCodeStreamer else { return nil }
-        // plan 模式下流式路径不经过 CLIInvocationBuilder.opencode，需在此处注入 planModeHint，
-        // 与 run 回退路径保持一致；否则切到 plan 对流式 opencode 是空操作。
-        let finalPrompt = interactionMode.planModeHint.map { $0 + "\n\n" + prompt } ?? prompt
+        // plan 模式走 opencode 原生 plan agent（工具级禁用所有编辑工具，硬只读），而非注入提示词。
+        // sessionCreateBody 仍 deny plan_enter/plan_exit：模型想切回 build 改文件会被自动拒绝、不挂起。
         let request = OpenCodeStreamRequest(
             executable: agent.command,
             environment: agent.runtimeEnvironment(),
             workingDirectory: workingDirectory,
-            prompt: finalPrompt,
+            prompt: prompt,
             model: model,
             variant: Self.openCodeVariant(reasoningEffort),
             attachments: attachments,
             continueSessionID: externalSessionID,
             title: title,
             thinking: agent.outputMode == .jsonLines,
-            stopSignal: agent.stopSignal
+            stopSignal: agent.stopSignal,
+            agent: interactionMode == .plan ? "plan" : nil
         )
         return { try await streamer.stream(request) }
     }

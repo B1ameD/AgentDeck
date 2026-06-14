@@ -71,35 +71,19 @@ final class WorkspaceControllerTests: XCTestCase {
     }
 
     func testAddSessionFocusesSelectedAgentAsCurrentTab() {
-        func trace(_ s: String) {
-            let url = URL(fileURLWithPath: "/tmp/adtrace.log")
-            let data = Data("ADTRACE \(s)\n".utf8)
-            if let fh = try? FileHandle(forWritingTo: url) {
-                fh.seekToEndOfFile(); fh.write(data); try? fh.close()
-            } else { try? data.write(to: url) }
-        }
-        trace("T1 build agents")
-        let a0 = makeAgent(id: "a", name: "A", command: "/bin/a")
-        trace("T1a")
-        let b0 = makeAgent(id: "b", name: "B", command: "/bin/b")
-        trace("T1b")
-        let c0 = makeAgent(id: "c", name: "C", command: "/bin/c")
-        trace("T1c")
-        let agents = [a0, b0, c0]
-        trace("T2 before AgentRegistry")
-        let registry = AgentRegistry(agents: agents)
-        trace("T2r after AgentRegistry, before WorkspaceController init")
+        let agents = [
+            makeAgent(id: "a", name: "A", command: "/bin/a"),
+            makeAgent(id: "b", name: "B", command: "/bin/b"),
+            makeAgent(id: "c", name: "C", command: "/bin/c")
+        ]
         let controller = WorkspaceController(
-            registry: registry,
+            registry: AgentRegistry(agents: agents),
             workingDirectory: URL(filePath: "/tmp/workspace"),
             initialPaneCount: 1
         )
-        trace("T3 after init, before addSession b")
 
         controller.addSession(agentID: "b")
-        trace("T4 after addSession b")
         controller.addSession(agentID: "c")
-        trace("T5 after addSession c")
 
         XCTAssertEqual(controller.sessions.map(\.agent.id), ["a", "b", "c"])
         XCTAssertEqual(controller.focusedSession?.agent.id, "c")

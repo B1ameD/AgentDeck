@@ -285,7 +285,7 @@ final class OpenCodeStreamingTests: XCTestCase {
     }
 
     @MainActor
-    func testOpenCodePlanModeInjectsHintIntoStreamingPrompt() async {
+    func testOpenCodePlanModeUsesNativePlanAgentInStream() async {
         let streamer = FakeOpenCodeStreamer(.yield([
             #"{"type":"step_start","sessionID":"ses_plan","part":{}}"#,
             #"{"type":"text","sessionID":"ses_plan","part":{"type":"text","text":"ok"}}"#
@@ -300,15 +300,13 @@ final class OpenCodeStreamingTests: XCTestCase {
 
         await session.send("分析这段代码")
 
-        // 流式（默认生产路径）不经过 CLIInvocationBuilder，必须在此注入 planModeHint，
-        // 否则切 plan 对流式 opencode 是空操作。
-        let prompt = streamer.firstRequest?.prompt ?? ""
-        XCTAssertTrue(prompt.contains("[Plan Mode]"))
-        XCTAssertTrue(prompt.hasSuffix("分析这段代码"))
+        // plan 走原生 plan agent（硬只读），prompt 保持原样、不再塞提示词。
+        XCTAssertEqual(streamer.firstRequest?.agent, "plan")
+        XCTAssertEqual(streamer.firstRequest?.prompt, "分析这段代码")
     }
 
     @MainActor
-    func testOpenCodeBuildModeStreamingPromptHasNoHint() async {
+    func testOpenCodeBuildModeStreamHasNoAgent() async {
         let streamer = FakeOpenCodeStreamer(.yield([
             #"{"type":"step_start","sessionID":"ses_build","part":{}}"#,
             #"{"type":"text","sessionID":"ses_build","part":{"type":"text","text":"ok"}}"#
@@ -323,7 +321,15 @@ final class OpenCodeStreamingTests: XCTestCase {
 
         await session.send("继续")
 
+        XCTAssertNil(streamer.firstRequest?.agent)
         XCTAssertEqual(streamer.firstRequest?.prompt, "继续")
+    }
+
+    func testMessageBodyCarriesPlanAgent() {
+        let plan = OpenCodeStreamWire.messageBody(model: "default", variant: nil, prompt: "x", attachments: [], agent: "plan")
+        XCTAssertEqual(plan["agent"] as? String, "plan")
+        let build = OpenCodeStreamWire.messageBody(model: "default", variant: nil, prompt: "x", attachments: [], agent: nil)
+        XCTAssertNil(build["agent"])
     }
 
     @MainActor

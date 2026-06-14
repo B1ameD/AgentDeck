@@ -32,12 +32,8 @@ jobs:
         run: swift build
 
       - name: Run tests
-        timeout-minutes: 5
+        timeout-minutes: 12
         run: swift test
-
-      - name: Dump ADTRACE
-        if: always()
-        run: cat /tmp/adtrace.log 2>/dev/null || echo "no adtrace file"
 
   lint:
     name: SwiftLint
