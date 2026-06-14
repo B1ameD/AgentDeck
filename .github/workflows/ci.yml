@@ -34,6 +34,10 @@ jobs:
       - name: Run tests
         run: swift test
 
+      - name: Dump ADTRACE
+        if: always()
+        run: cat /tmp/adtrace.log 2>/dev/null || echo "no adtrace file"
+
   lint:
     name: SwiftLint
     runs-on: macos-26

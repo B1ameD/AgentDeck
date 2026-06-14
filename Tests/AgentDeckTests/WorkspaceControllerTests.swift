@@ -71,16 +71,26 @@ final class WorkspaceControllerTests: XCTestCase {
     }
 
     func testAddSessionFocusesSelectedAgentAsCurrentTab() {
-        func trace(_ s: String) { FileHandle.standardError.write(Data("ADTRACE \(s)\n".utf8)) }
+        func trace(_ s: String) {
+            let url = URL(fileURLWithPath: "/tmp/adtrace.log")
+            let data = Data("ADTRACE \(s)\n".utf8)
+            if let fh = try? FileHandle(forWritingTo: url) {
+                fh.seekToEndOfFile(); fh.write(data); try? fh.close()
+            } else { try? data.write(to: url) }
+        }
         trace("T1 build agents")
-        let agents = [
-            makeAgent(id: "a", name: "A", command: "/bin/a"),
-            makeAgent(id: "b", name: "B", command: "/bin/b"),
-            makeAgent(id: "c", name: "C", command: "/bin/c")
-        ]
-        trace("T2 before WorkspaceController init")
+        let a0 = makeAgent(id: "a", name: "A", command: "/bin/a")
+        trace("T1a")
+        let b0 = makeAgent(id: "b", name: "B", command: "/bin/b")
+        trace("T1b")
+        let c0 = makeAgent(id: "c", name: "C", command: "/bin/c")
+        trace("T1c")
+        let agents = [a0, b0, c0]
+        trace("T2 before AgentRegistry")
+        let registry = AgentRegistry(agents: agents)
+        trace("T2r after AgentRegistry, before WorkspaceController init")
         let controller = WorkspaceController(
-            registry: AgentRegistry(agents: agents),
+            registry: registry,
             workingDirectory: URL(filePath: "/tmp/workspace"),
             initialPaneCount: 1
         )

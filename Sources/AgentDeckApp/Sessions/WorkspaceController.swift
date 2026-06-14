@@ -41,6 +41,14 @@ public final class WorkspaceController {
             .map(\.element)
     }
 
+    static func adtrace(_ s: String) {
+        let url = URL(fileURLWithPath: "/tmp/adtrace.log")
+        let data = Data("ADTRACE \(s)\n".utf8)
+        if let fh = try? FileHandle(forWritingTo: url) {
+            fh.seekToEndOfFile(); fh.write(data); try? fh.close()
+        } else { try? data.write(to: url) }
+    }
+
     public init(
         registry: AgentRegistry,
         workingDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
@@ -130,14 +138,14 @@ public final class WorkspaceController {
             focusID = initialSessions.first?.id
         }
 
-        FileHandle.standardError.write(Data("ADTRACE I1 sessions built (\(initialSessions.count))\n".utf8))
+        Self.adtrace("I1 sessions built (\(initialSessions.count))")
         self.sessions = initialSessions
         self.focusedSessionID = focusID
         self.registryMessage = Self.message(for: registry)
         for session in sessions { attach(to: session) }
-        FileHandle.standardError.write(Data("ADTRACE I2 before refreshRecents\n".utf8))
+        Self.adtrace("I2 before refreshRecents")
         refreshRecents()
-        FileHandle.standardError.write(Data("ADTRACE I3 after refreshRecents\n".utf8))
+        Self.adtrace("I3 after refreshRecents")
         if let customAgentsDirectory {
             configWatcher = AgentConfigWatcher(directory: customAgentsDirectory) { [weak self] in
                 self?.reloadAgentRegistry()
