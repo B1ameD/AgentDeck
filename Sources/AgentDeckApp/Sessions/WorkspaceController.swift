@@ -130,11 +130,14 @@ public final class WorkspaceController {
             focusID = initialSessions.first?.id
         }
 
+        FileHandle.standardError.write(Data("ADTRACE I1 sessions built (\(initialSessions.count))\n".utf8))
         self.sessions = initialSessions
         self.focusedSessionID = focusID
         self.registryMessage = Self.message(for: registry)
         for session in sessions { attach(to: session) }
+        FileHandle.standardError.write(Data("ADTRACE I2 before refreshRecents\n".utf8))
         refreshRecents()
+        FileHandle.standardError.write(Data("ADTRACE I3 after refreshRecents\n".utf8))
         if let customAgentsDirectory {
             configWatcher = AgentConfigWatcher(directory: customAgentsDirectory) { [weak self] in
                 self?.reloadAgentRegistry()

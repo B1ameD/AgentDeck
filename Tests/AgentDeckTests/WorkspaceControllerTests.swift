@@ -71,19 +71,25 @@ final class WorkspaceControllerTests: XCTestCase {
     }
 
     func testAddSessionFocusesSelectedAgentAsCurrentTab() {
+        func trace(_ s: String) { FileHandle.standardError.write(Data("ADTRACE \(s)\n".utf8)) }
+        trace("T1 build agents")
         let agents = [
             makeAgent(id: "a", name: "A", command: "/bin/a"),
             makeAgent(id: "b", name: "B", command: "/bin/b"),
             makeAgent(id: "c", name: "C", command: "/bin/c")
         ]
+        trace("T2 before WorkspaceController init")
         let controller = WorkspaceController(
             registry: AgentRegistry(agents: agents),
             workingDirectory: URL(filePath: "/tmp/workspace"),
             initialPaneCount: 1
         )
+        trace("T3 after init, before addSession b")
 
         controller.addSession(agentID: "b")
+        trace("T4 after addSession b")
         controller.addSession(agentID: "c")
+        trace("T5 after addSession c")
 
         XCTAssertEqual(controller.sessions.map(\.agent.id), ["a", "b", "c"])
         XCTAssertEqual(controller.focusedSession?.agent.id, "c")
