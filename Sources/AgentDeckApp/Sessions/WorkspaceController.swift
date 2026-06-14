@@ -62,7 +62,12 @@ public final class WorkspaceController {
         self.dismissedRecentIDs = Set(restoreDismissedRecents ?? [])
         self.customAgentsDirectory = customAgentsDirectory
         // #32：退出前同步排空写盘队列——save 后台异步落盘，发完消息立即 Cmd-Q 会丢最后一轮转录。
-        conversationStore.installTerminationFlush(on: NSApplication.willTerminateNotification)
+        // 仅在真实 App 进程挂载:XCTest 进程里首次访问 NSApplication 会触发 AppKit 类初始化,
+        // 在无窗口服务的 headless CI runner 上会挂起(本地有 GUI 会话故不复现)。存储层本身不依赖
+        // AppKit(installTerminationFlush 收任意 Notification.Name),仅此调用点引入 AppKit 依赖。
+        if NSClassFromString("XCTestCase") == nil {
+            conversationStore.installTerminationFlush(on: NSApplication.willTerminateNotification)
+        }
         // 在两段式初始化的第一阶段无法用 self.openCodeStreamer，用局部值注入到本次构造的会话里。
         let streamer = openCodeStreamer
 
