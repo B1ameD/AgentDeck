@@ -427,6 +427,11 @@ final class ACPSessionTests: XCTestCase {
         XCTAssertTrue(acpAgent().supportsPlanMode)
     }
 
+    func testACPAgentSkipsRunGate() {
+        // ACP agent 用 normalAgentProcess 风险 → 运行前不弹 CLI 授权闸门（权限由 ACP 逐工具卡片承接）。
+        XCTAssertEqual(AgentSession.risk(for: acpAgent()), .normalAgentProcess)
+    }
+
     func testACPErrorSurfacesAsErrorMessage() async {
         let transport = FakeACPTransport(scripted: [], failPromptWith: ACPClientError.requestFailed(code: -32603, message: "model_not_found"))
         let session = AgentSession(

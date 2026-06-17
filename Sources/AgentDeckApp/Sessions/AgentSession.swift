@@ -433,14 +433,17 @@ public final class AgentSession: Identifiable {
 
     /// 把 agent 家族映射到运行风险：编码类 agent 视为会改文件，pi 视为普通进程，
     /// 自定义 agent 保守地视为会执行 shell 命令。
+    /// ACP agent 例外：ACP 本应按工具逐次征询权限（request_permission 卡片），不需要 CLI 时代的
+    /// 「运行前一次性授权」闸门——否则每开一段对话先弹一个与具体操作无关的确认框，体验割裂。
     static func risk(for agent: AgentConfig) -> PermissionRequest.Risk {
+        if agent.resolvedTransport == .acp { return .normalAgentProcess }
         switch agent.kind {
         case .claudeCode, .codex, .openCode:
-            .modifiesFiles
+            return .modifiesFiles
         case .pi:
-            .normalAgentProcess
+            return .normalAgentProcess
         case .custom:
-            .runsShellCommand
+            return .runsShellCommand
         }
     }
 
