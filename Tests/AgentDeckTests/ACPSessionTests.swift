@@ -192,6 +192,61 @@ final class ACPSessionTests: XCTestCase {
         XCTAssertNil(session.pendingACPPermission)
     }
 
+    func testACPCapturesConfigOptionsAndCurrentMode() async {
+        let transport = FakeACPTransport(
+            scripted: [.completed(stopReason: "end_turn")],
+            availableModes: [ACPMode(from: .object(["id": .string("plan"), "name": .string("Plan")]))!],
+            configOptions: [ACPConfigOption(from: .object(["id": .string("model"), "name": .string("Model")]))!],
+            currentModeId: "plan"
+        )
+        let session = AgentSession(
+            agent: acpAgent(),
+            workingDirectory: FileManager.default.temporaryDirectory,
+            permissionDecider: { _ in .allow },
+            acpTransport: transport
+        )
+
+        await session.send("hi")
+
+        XCTAssertEqual(session.acpConfigOptions.map(\.id), ["model"])
+        XCTAssertEqual(session.acpCurrentModeID, "plan")
+    }
+
+    func testACPCurrentModeUpdateRefreshesState() async {
+        let modeUpdate = update("current_mode_update", extra: ["currentModeId": .string("acceptEdits")])
+        let transport = FakeACPTransport(scripted: [.update(modeUpdate), .completed(stopReason: "end_turn")],
+                                         currentModeId: "default")
+        let session = AgentSession(
+            agent: acpAgent(),
+            workingDirectory: FileManager.default.temporaryDirectory,
+            permissionDecider: { _ in .allow },
+            acpTransport: transport
+        )
+
+        await session.send("go")
+
+        XCTAssertEqual(session.acpCurrentModeID, "acceptEdits") // current_mode_update 覆盖了初值 default
+    }
+
+    func testACPSetConfigOptionForwardsToTransport() async {
+        let transport = FakeACPTransport(
+            scripted: [.completed(stopReason: "end_turn")],
+            configOptions: [ACPConfigOption(from: .object(["id": .string("model"), "name": .string("Model")]))!]
+        )
+        let session = AgentSession(
+            agent: acpAgent(),
+            workingDirectory: FileManager.default.temporaryDirectory,
+            permissionDecider: { _ in .allow },
+            acpTransport: transport
+        )
+
+        await session.send("hi") // 建立会话
+        await session.setACPConfigOption(configId: "model", value: "claude-opus-4-8")
+
+        XCTAssertEqual(transport.lastConfig?.configId, "model")
+        XCTAssertEqual(transport.lastConfig?.value, "claude-opus-4-8")
+    }
+
     func testACPErrorSurfacesAsErrorMessage() async {
         let transport = FakeACPTransport(scripted: [], failPromptWith: ACPClientError.requestFailed(code: -32603, message: "model_not_found"))
         let session = AgentSession(
@@ -221,10 +276,16 @@ final class FakeACPTransport: ACPTransporting, @unchecked Sendable {
     private(set) var lastPromptText: String?
     private(set) var lastModeID: String?
 
-    init(scripted: [ACPPromptEvent], availableModes: [ACPMode] = [], failPromptWith: Error? = nil) {
+    private let configOptions: [ACPConfigOption]
+    private let currentModeId: String?
+
+    init(scripted: [ACPPromptEvent], availableModes: [ACPMode] = [], failPromptWith: Error? = nil,
+         configOptions: [ACPConfigOption] = [], currentModeId: String? = nil) {
         self.scripted = scripted
         self.availableModes = availableModes
         self.failPromptWith = failPromptWith
+        self.configOptions = configOptions
+        self.currentModeId = currentModeId
     }
 
     func start(command: String, args: [String], environment: [String: String], workingDirectory: URL) async throws {
@@ -244,15 +305,25 @@ final class FakeACPTransport: ACPTransporting, @unchecked Sendable {
         var result: [String: JSONValue] = ["sessionId": .string("s1")]
         if !availableModes.isEmpty {
             result["modes"] = .object([
-                "currentModeId": .string("default"),
+                "currentModeId": .string(currentModeId ?? "default"),
                 "availableModes": .array(availableModes.map { .object(["id": .string($0.id), "name": .string($0.name)]) })
             ])
+        }
+        if !configOptions.isEmpty {
+            result["configOptions"] = .array(configOptions.map {
+                .object(["id": .string($0.id), "name": .string($0.name)])
+            })
         }
         return ACPNewSession(from: .object(result))!
     }
 
     func setMode(sessionId: String, modeId: String) async throws {
         lastModeID = modeId
+    }
+
+    private(set) var lastConfig: (configId: String, value: String)?
+    func setConfigOption(sessionId: String, configId: String, value: String) async throws {
+        lastConfig = (configId, value)
     }
 
     func prompt(sessionId: String, content: [JSONValue]) -> AsyncThrowingStream<ACPPromptEvent, Error> {

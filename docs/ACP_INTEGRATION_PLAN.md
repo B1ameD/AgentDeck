@@ -117,10 +117,11 @@ public var transport: Transport = .cli
 
 - **阶段 0(spike) ✅ 完成:** 手搓 `ACPClient`,跑通 `initialize → session/new → session/prompt`。对 `npx -y @agentclientprotocol/claude-agent-acp` 实测打通(protocolVersion=1、authMethods=[]、plan/bypassPermissions 模式自报、usage_update 带 token+USD)。
 - **阶段 1 ✅ 完成:** `AgentConfig.transport`(cli|acp,可选缺省回落 cli);`AgentSession.performSendACP/consumeACP` 独立路径——经 `ACPEventTranslator` 把 `session/update` 翻成 `OutputEvent`,复用现有 `apply`/气泡装配/计时;`ACPTransporting` 协议便于注入测试;跨轮复用同一适配器进程与 sessionId(多轮上下文);`stop()` 发 `session/cancel` 干净收尾;plan/build→`set_mode`(仅当 agent 自报该模式);PATH 经 `ShellEnvironment` 增强避免 GUI launchd 最小 PATH 找不到 npx。验证:`ACPSessionTests`(假传输 4 例:流式累加/跨轮复用/plan 映射/错误冒泡)+ `testLiveACPThroughAgentSession`(真适配器端到端,ACPDECK_LIVE=1,回 ACP_OK)。提供 `~/Library/Application Support/AgentDeck/Agents/claude-acp.json` 即开即用。**未做(留后续阶段):权限卡片、模型/effort 配置项 UI、附件结构化块、UI 上的模式芯片联动。**
-- **阶段 2(进行中):**
-  - ✅ **权限卡片**:`session/request_permission` → `ACPClient` onPermission 回调 → `AgentSession.requestACPPermission`(挂起 + `pendingACPPermission` 状态)→ ChatPaneView confirmationDialog 按 agent 自报选项逐个出按钮(allow→普通、reject→destructive)→ `resolveACPPermission(optionId:)` 回传;停止/超时/取消放掉挂起避免 agent 永久等待。build 模式映射改 `acceptEdits`(编辑放行、危险操作经卡片征询),契合 AgentDeck 权限把关定位。验证:`ACPSessionTests` 权限往返/取消/build→acceptEdits 共 3 例。
-  - ⬜ **模型/effort 配置项**:`set_config_option` + agent 自报 `configOptions` 动态渲染到模型/effort 芯片(需 UI 工作)。
-  - ⬜ UI 模式芯片 ↔ `current_mode_update`;usage 面板细化。
+- **阶段 2 ✅ 完成（协议/数据层）:**
+  - **权限卡片**:`session/request_permission` → `ACPClient` onPermission 回调 → `AgentSession.requestACPPermission`(挂起 + `pendingACPPermission` 状态)→ ChatPaneView confirmationDialog 按 agent 自报选项逐个出按钮(allow→普通、reject→destructive)→ `resolveACPPermission(optionId:)` 回传;停止/超时/取消放掉挂起避免 agent 永久等待。build 模式映射改 `acceptEdits`(编辑放行、危险操作经卡片征询),契合 AgentDeck 权限把关定位。
+  - **配置项 + 模式**:`session/new` 捕获 `configOptions`(暴露 `acpConfigOptions`)与 `currentModeId`(`acpCurrentModeID`);`current_mode_update` 实时刷新 `acpCurrentModeID`;`setACPConfigOption(configId:value:)` → `session/set_config_option`(参数对齐 schema)。
+  - 验证:`ACPSessionTests` 共 11 例(权限往返/取消/build→acceptEdits/捕获 configOptions+mode/current_mode_update 刷新/set_config_option 转发 等)。
+  - **实测结论 → 故意不做的部分**:Claude 适配器**不自报 configOptions**(模型走 `ANTHROPIC_MODEL` 环境变量)、modes 也基本用户驱动 → 「模型/effort 配置项 picker UI」「模式芯片可视联动」对捆绑的 claude agent **零 payoff**,仅 codex-acp（自定义 provider）受益。数据/协议层已就绪（codex-acp 即插即用），UI picker 留到接 codex-acp 时再做。
 - **阶段 3:** 续接(load/resume)、会话生命周期(list/close/delete ↔ Recents/#23)、fs 回调 ↔ #7 diff、附件 ↔ #11/#12。
 - **阶段 4:** 多 agent + 对每个 agent 的"ACP 优先,失败回退 CLI"策略;文档化如何声明一个 ACP agent。
 

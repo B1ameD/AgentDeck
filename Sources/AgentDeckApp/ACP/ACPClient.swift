@@ -48,6 +48,7 @@ public protocol ACPTransporting: Sendable {
     func initialize() async throws -> ACPAgentCapabilities
     func newSession(cwd: URL, mcpServers: [JSONValue]) async throws -> ACPNewSession
     func setMode(sessionId: String, modeId: String) async throws
+    func setConfigOption(sessionId: String, configId: String, value: String) async throws
     func prompt(sessionId: String, content: [JSONValue]) -> AsyncThrowingStream<ACPPromptEvent, Error>
     func cancel(sessionId: String) async
     func shutdown() async
@@ -144,6 +145,14 @@ public actor ACPClient: ACPTransporting {
     public func setMode(sessionId: String, modeId: String) async throws {
         _ = try await request(method: "session/set_mode", params: [
             "sessionId": .string(sessionId), "modeId": .string(modeId)
+        ])
+    }
+
+    /// 设置会话配置项（如模型/推理强度——由 agent 自报的 configOptions 决定可选值）。
+    /// 入参对齐 schema 的 SetSessionConfigOptionRequest：sessionId / configId / value。
+    public func setConfigOption(sessionId: String, configId: String, value: String) async throws {
+        _ = try await request(method: "session/set_config_option", params: [
+            "sessionId": .string(sessionId), "configId": .string(configId), "value": .string(value)
         ])
     }
 

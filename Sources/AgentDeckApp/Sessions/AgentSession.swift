@@ -163,6 +163,11 @@ public final class AgentSession: Identifiable {
     private var acpTransport: ACPTransporting?
     private var acpSessionID: String?
     private var acpAvailableModes: [ACPMode] = []
+    /// ACP agent 自报的会话配置项（模型/推理强度等选择器）。Claude 适配器为空（模型走 env），
+    /// codex-acp 等会自报；供未来配置项 UI 动态渲染。
+    public private(set) var acpConfigOptions: [ACPConfigOption] = []
+    /// ACP 会话当前模式 id（来自 session/new 初值与 current_mode_update）。供 UI 显示真实模式。
+    public private(set) var acpCurrentModeID: String?
     private static let streamingLog = Logger(subsystem: "AgentDeck", category: "opencode-stream")
     /// 「允许并记住」记下的授权目录。授权只对该目录有效——切到别的目录须重新征询，
     /// 避免把对 A 目录的许可静默套用到 B 目录（权限弹窗本就是按目录展示风险的）。
@@ -589,8 +594,16 @@ public final class AgentSession: Identifiable {
             let session = try await transport.newSession(cwd: workingDirectory, mcpServers: [])
             acpSessionID = session.sessionId
             acpAvailableModes = session.availableModes
+            acpConfigOptions = session.configOptions
+            acpCurrentModeID = session.currentModeId
         }
         return transport
+    }
+
+    /// 设置 ACP 会话配置项（模型/effort 等）。会话尚未建立则忽略。供未来配置项 UI 调用。
+    public func setACPConfigOption(configId: String, value: String) async {
+        guard let sessionID = acpSessionID, let transport = acpTransport else { return }
+        try? await transport.setConfigOption(sessionId: sessionID, configId: configId, value: value)
     }
 
     /// plan/build → ACP 会话模式（仅当 agent 自报了该模式 id 时才设；否则用默认模式，危险操作经 request_permission 弹卡片）。
@@ -661,6 +674,7 @@ public final class AgentSession: Identifiable {
                 case .update(let params):
                     let translation = ACPEventTranslator.translate(updateParams: params)
                     if let turn = translation.usage { recordTurnUsage(turn) }
+                    if let modeID = translation.currentModeId { acpCurrentModeID = modeID }
                     for parsed in translation.events {
                         apply(parsed, assistantIndex: &assistantIndex, producedMessage: &producedMessage)
                     }
