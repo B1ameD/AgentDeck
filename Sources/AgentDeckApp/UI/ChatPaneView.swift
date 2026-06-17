@@ -194,6 +194,24 @@ struct ChatPaneView: View {
         } message: { pending in
             Text("命令：\(pending.request.command)\n目录：\(pending.request.workingDirectory)\n风险：\(riskLabel(pending.request.risk))")
         }
+        // ACP 工具权限请求（agent 通过 session/request_permission 发起）：按 agent 自报的选项逐个出按钮。
+        .confirmationDialog(
+            "Agent 请求权限",
+            isPresented: Binding(
+                get: { session.pendingACPPermission != nil },
+                set: { presented in if !presented { session.resolveACPPermission(optionId: nil) } }
+            ),
+            presenting: session.pendingACPPermission
+        ) { pending in
+            ForEach(pending.options) { option in
+                Button(option.name, role: option.isAllow ? nil : .destructive) {
+                    session.resolveACPPermission(optionId: option.optionId)
+                }
+            }
+            Button("取消", role: .cancel) { session.resolveACPPermission(optionId: nil) }
+        } message: { pending in
+            Text(pending.title)
+        }
         // 广播为用户显式批量动作，默认放行（见 WorkspaceController.broadcast），不再弹聚合授权框。
         }
         }

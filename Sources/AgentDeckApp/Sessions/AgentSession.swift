@@ -109,6 +109,10 @@ public final class AgentSession: Identifiable {
     public var timeout: Duration?
     /// 等待用户授权的待运行请求；非 nil 时 UI 应弹出确认。
     public private(set) var pendingPermission: PendingRun?
+    /// ACP 工具权限请求（agent 通过 session/request_permission 发起，含 agent 自报的可选项）；
+    /// 非 nil 时 UI 弹卡片，用户点选后经 resolveACPPermission 回传 optionId（#ACP 阶段 2）。
+    public private(set) var pendingACPPermission: PendingACPPermission?
+    private var acpPermissionContinuation: CheckedContinuation<String?, Never>?
     /// 对话变化后的持久化回调（WorkspaceController 注入，把本会话落盘）。
     public var onPersist: (@MainActor () -> Void)?
     /// /clear：请求「开新会话」——把当前标签换成同 agent/目录的新空会话，旧对话留在历史。
@@ -123,6 +127,13 @@ public final class AgentSession: Identifiable {
         public var prompt: String
         public var attachments: [URL]
         public var request: PermissionRequest
+    }
+
+    /// 一条 ACP 工具权限请求：标题（工具调用摘要）+ agent 自报的可选项（allow_once/allow_always/…）。
+    public struct PendingACPPermission: Identifiable, Equatable, Sendable {
+        public let id = UUID()
+        public var title: String
+        public var options: [ACPPermissionOption]
     }
 
     private typealias ClaudeContinuityStrategy = SessionContinuity.ClaudeStrategy
@@ -565,7 +576,7 @@ public final class AgentSession: Identifiable {
 
     /// 惰性建立 ACP 会话：首轮 start → initialize → session/new；后续轮复用同一适配器进程与 sessionId。
     private func ensureACPSession() async throws -> ACPTransporting {
-        let transport = acpTransport ?? ACPClient()
+        let transport = acpTransport ?? ACPClient(handlers: makeACPHandlers())
         acpTransport = transport
         if acpSessionID == nil {
             try await transport.start(
@@ -582,14 +593,49 @@ public final class AgentSession: Identifiable {
         return transport
     }
 
-    /// plan/build → ACP 会话模式（仅当 agent 自报了该模式 id 时才设；否则用默认模式 + 客户端自动放行权限）。
+    /// plan/build → ACP 会话模式（仅当 agent 自报了该模式 id 时才设；否则用默认模式，危险操作经 request_permission 弹卡片）。
+    /// build 用 acceptEdits（文件编辑直接放行、其余危险操作仍征询），契合 AgentDeck 的权限把关定位；
+    /// 未自报 acceptEdits 时回落默认模式（多半每步征询，由权限卡片承接）。
     private func acpModeID(for mode: InteractionMode) -> String? {
         let candidate: String
         switch mode {
         case .plan: candidate = "plan"
-        case .build: candidate = "bypassPermissions"
+        case .build: candidate = "acceptEdits"
         }
         return acpAvailableModes.contains { $0.id == candidate } ? candidate : nil
+    }
+
+    /// 构造 ACPClient 的 agent→client 回调：权限 → 弹卡片等用户作答；fs 读写留待 phase 3（默认不接管）。
+    private func makeACPHandlers() -> ACPClientHandlers {
+        ACPClientHandlers(
+            onPermission: { [weak self] toolCall, options in
+                guard let self else { return options.first(where: { $0.isAllow })?.optionId }
+                return await self.requestACPPermission(toolCall: toolCall, options: options)
+            }
+        )
+    }
+
+    /// 弹出权限卡片并挂起，直到用户点选（返回 optionId）或取消/停止（返回 nil）。
+    /// internal（非 private）以便单测直接驱动权限往返。
+    func requestACPPermission(toolCall: JSONValue, options: [ACPPermissionOption]) async -> String? {
+        // 无可选项（异常）→ 不挂起，按拒绝处理。
+        guard !options.isEmpty else { return nil }
+        // 已有挂起的权限请求（理论上 ACP 串行，不应发生）→ 先放掉旧的，避免续接丢失。
+        acpPermissionContinuation?.resume(returning: nil)
+        return await withCheckedContinuation { continuation in
+            acpPermissionContinuation = continuation
+            pendingACPPermission = PendingACPPermission(
+                title: ACPEventTranslator.toolSummary(toolCall) ?? "工具调用",
+                options: options
+            )
+        }
+    }
+
+    /// UI 回传用户对权限卡片的选择（optionId；nil = 取消/拒绝）。
+    public func resolveACPPermission(optionId: String?) {
+        pendingACPPermission = nil
+        acpPermissionContinuation?.resume(returning: optionId)
+        acpPermissionContinuation = nil
     }
 
     private func consumeACP(prompt: String, attachments: [URL]) async -> AgentRunOutcome {
@@ -624,6 +670,7 @@ public final class AgentSession: Identifiable {
             }
 
             if Task.isCancelled {
+                resolveACPPermission(optionId: nil)
                 recordTermination()
                 return AgentRunOutcome(exitCode: -2, stderr: "", producedMessage: producedMessage)
             }
@@ -634,6 +681,7 @@ public final class AgentSession: Identifiable {
             return AgentRunOutcome(exitCode: 0, stderr: "", producedMessage: producedMessage)
         } catch {
             if Task.isCancelled {
+                resolveACPPermission(optionId: nil)
                 recordTermination()
                 return AgentRunOutcome(exitCode: -2, stderr: "", producedMessage: producedMessage)
             }
@@ -755,6 +803,7 @@ public final class AgentSession: Identifiable {
 
         // ACP：向 agent 发 session/cancel（prompt 响应随即以 cancelled 返回，干净收尾），并取消消费任务。
         if agent.resolvedTransport == .acp {
+            resolveACPPermission(optionId: nil) // 放掉挂起的权限卡片，避免 agent 永久等待
             if let sessionID = acpSessionID, let transport = acpTransport {
                 Task { await transport.cancel(sessionId: sessionID) }
             }

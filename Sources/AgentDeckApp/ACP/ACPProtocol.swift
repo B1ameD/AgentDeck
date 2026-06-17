@@ -185,10 +185,11 @@ public struct ACPConfigOption: Sendable, Equatable {
 }
 
 /// 一条权限请求的选项(allow_once / allow_always / reject_once / reject_always)。
-public struct ACPPermissionOption: Sendable, Equatable {
+public struct ACPPermissionOption: Sendable, Equatable, Identifiable {
     public var optionId: String
     public var name: String
     public var kind: String
+    public var id: String { optionId }
     public init?(from v: JSONValue) {
         guard let oid = v["optionId"]?.stringValue, let name = v["name"]?.stringValue,
               let kind = v["kind"]?.stringValue else { return nil }

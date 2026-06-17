@@ -125,6 +125,73 @@ final class ACPSessionTests: XCTestCase {
         )
     }
 
+    func testACPBuildModeMapsToAcceptEditsWhenAdvertised() async {
+        let transport = FakeACPTransport(
+            scripted: [.completed(stopReason: "end_turn")],
+            availableModes: [ACPMode(from: .object(["id": .string("acceptEdits"), "name": .string("Accept Edits")]))!,
+                             ACPMode(from: .object(["id": .string("plan"), "name": .string("Plan")]))!]
+        )
+        let session = AgentSession(
+            agent: acpAgent(),
+            workingDirectory: FileManager.default.temporaryDirectory,
+            permissionDecider: { _ in .allow },
+            acpTransport: transport
+        )
+        session.interactionMode = .build
+
+        await session.send("edit it")
+
+        XCTAssertEqual(transport.lastModeID, "acceptEdits")
+    }
+
+    func testACPPermissionCardSetsPendingAndResolves() async {
+        let session = AgentSession(
+            agent: acpAgent(),
+            workingDirectory: FileManager.default.temporaryDirectory,
+            permissionDecider: { _ in .allow }
+        )
+        let allow = ACPPermissionOption(from: .object(["optionId": .string("o-allow"), "name": .string("允许一次"), "kind": .string("allow_once")]))!
+        let reject = ACPPermissionOption(from: .object(["optionId": .string("o-reject"), "name": .string("拒绝"), "kind": .string("reject_once")]))!
+
+        let task = Task {
+            await session.requestACPPermission(
+                toolCall: .object(["title": .string("Run ls -la")]),
+                options: [allow, reject]
+            )
+        }
+        // 等卡片出现
+        for _ in 0..<100 where session.pendingACPPermission == nil { await Task.yield() }
+
+        XCTAssertEqual(session.pendingACPPermission?.title, "Run ls -la")
+        XCTAssertEqual(session.pendingACPPermission?.options.map(\.optionId), ["o-allow", "o-reject"])
+
+        session.resolveACPPermission(optionId: "o-allow")
+        let chosen = await task.value
+
+        XCTAssertEqual(chosen, "o-allow")
+        XCTAssertNil(session.pendingACPPermission)
+    }
+
+    func testACPPermissionCancelReturnsNil() async {
+        let session = AgentSession(
+            agent: acpAgent(),
+            workingDirectory: FileManager.default.temporaryDirectory,
+            permissionDecider: { _ in .allow }
+        )
+        let allow = ACPPermissionOption(from: .object(["optionId": .string("o1"), "name": .string("允许"), "kind": .string("allow_once")]))!
+
+        let task = Task {
+            await session.requestACPPermission(toolCall: .object([:]), options: [allow])
+        }
+        for _ in 0..<100 where session.pendingACPPermission == nil { await Task.yield() }
+
+        session.resolveACPPermission(optionId: nil) // 用户取消
+        let chosen = await task.value
+
+        XCTAssertNil(chosen)
+        XCTAssertNil(session.pendingACPPermission)
+    }
+
     func testACPErrorSurfacesAsErrorMessage() async {
         let transport = FakeACPTransport(scripted: [], failPromptWith: ACPClientError.requestFailed(code: -32603, message: "model_not_found"))
         let session = AgentSession(
