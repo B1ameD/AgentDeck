@@ -122,8 +122,15 @@ public var transport: Transport = .cli
   - **配置项 + 模式**:`session/new` 捕获 `configOptions`(暴露 `acpConfigOptions`)与 `currentModeId`(`acpCurrentModeID`);`current_mode_update` 实时刷新 `acpCurrentModeID`;`setACPConfigOption(configId:value:)` → `session/set_config_option`(参数对齐 schema)。
   - 验证:`ACPSessionTests` 共 11 例(权限往返/取消/build→acceptEdits/捕获 configOptions+mode/current_mode_update 刷新/set_config_option 转发 等)。
   - **实测结论 → 故意不做的部分**:Claude 适配器**不自报 configOptions**(模型走 `ANTHROPIC_MODEL` 环境变量)、modes 也基本用户驱动 → 「模型/effort 配置项 picker UI」「模式芯片可视联动」对捆绑的 claude agent **零 payoff**,仅 codex-acp（自定义 provider）受益。数据/协议层已就绪（codex-acp 即插即用），UI picker 留到接 codex-acp 时再做。
-- **阶段 3:** 续接(load/resume)、会话生命周期(list/close/delete ↔ Recents/#23)、fs 回调 ↔ #7 diff、附件 ↔ #11/#12。
-- **阶段 4:** 多 agent + 对每个 agent 的"ACP 优先,失败回退 CLI"策略;文档化如何声明一个 ACP agent。
+- **阶段 3 ✅ 完成:**
+  - **续接（resume）**:`ACPClient.resumeSession(sessionId:cwd:)` + 能力位 `ACPAgentCapabilities.supportsResume`(读 `agentCapabilities.sessionCapabilities.resume`)。`AgentSession.backendSessionID` 对 ACP 返回当前/恢复的 sessionId（复用现有持久化通道落盘）；恢复时若 agent 支持 resume 则 `ensureACPSession` 走 `session/resume` 续接（不重放历史，本地转录已存），否则新建。用 resume 而非 load 正是为避免历史重复。
+  - **fs 回调（修隐患 + #7 hook）**:`makeACPHandlers` 的 `onReadTextFile`/`onWriteTextFile` 由 stub 改真实磁盘读写（相对路径按 cwd 解析）——我们 initialize 时 advertise 了 fs 能力，agent 会把文件操作回调过来，之前返回空/失败是隐患。#7 逐轮 diff 本就经 `appendChangedFileLinks`（文件系统快照）对 ACP 生效，与写入机制无关。
+  - **附件 → ContentBlock**:`acpContentBlocks` 把附件转 `resource_link`（ACP baseline，所有 agent 必支持），替代 @路径文本；图片内联 base64 块留作增强。
+  - 验证:`ACPSessionTests` +6（resume 续接 / 不支持时回退新建 / backendSessionID 持久化 / 附件 3 块 / fs 读写磁盘 / 两会话独立）。
+- **阶段 4 ✅ 完成:**
+  - **多 agent 独立**:每个 AgentSession 持有自己的 ACPClient（独立适配器进程 + sessionId），天然隔离；测试 `testTwoACPSessionsAreIndependent` 证两会话各自流式互不干扰。
+  - **失败回退**:transport 由 `AgentConfig.transport` **显式声明**（不做隐式 ACP↔CLI 自动回退——同一 agent 同时配两套传输属过度设计）；ACP 适配器 start/initialize/resume 失败经 consumeACP 的 catch 冒泡为红色错误消息 + failed 状态（不静默吞）。
+  - **文档**:见下「§11 如何声明一个 ACP agent」。
 
 每阶段:行为改动先写失败测试(沿用仓库约定)。`ACPEventTranslator` 与 JSON-RPC 编解码是纯逻辑,易测。
 
@@ -146,3 +153,37 @@ public var transport: Transport = .cli
 - ACP 官方:https://agentclientprotocol.com · schema v1:`zed-industries/agent-client-protocol` `schema/v1/schema.json`
 - codex-acp(Codex 适配器,Rust):https://github.com/cola-io/codex-acp
 - acpx(headless ACP 客户端/多路复用,Node):https://github.com/openclaw/acpx
+
+## 11. 如何声明一个 ACP agent
+
+在自定义 agent 目录 `~/Library/Application Support/AgentDeck/Agents/` 放一个 JSON，把 `transport` 设为 `"acp"`，`command`/`args` 指向 ACP 适配器可执行。重载（设置页「重新加载」或重启）后即出现在「+」菜单。
+
+**Claude（已随仓库提供 `claude-acp.json`）:**
+```json
+{
+  "id": "claude-acp", "name": "Claude (ACP)",
+  "command": "npx", "args": ["-y", "@agentclientprotocol/claude-agent-acp"],
+  "env": {}, "workingDirectoryPolicy": "workspace",
+  "inputMode": "oneShotArgument", "outputMode": "stream",
+  "supportsStop": true, "stopSignal": "interrupt",
+  "transport": "acp"
+}
+```
+
+**Codex（Rust 适配器，需自行装 `codex-acp` 或用 npx 包）:**
+```json
+{
+  "id": "codex-acp", "name": "Codex (ACP)",
+  "command": "npx", "args": ["-y", "@agentclientprotocol/codex-acp"],
+  "env": {}, "workingDirectoryPolicy": "workspace",
+  "inputMode": "oneShotArgument", "outputMode": "stream",
+  "supportsStop": true, "stopSignal": "interrupt",
+  "transport": "acp"
+}
+```
+
+要点：
+- ACP 路径不使用 `inputMode`/`outputMode`（它们只对 CLI 传输有意义），但 schema 必填，填占位即可。
+- `env` 为空时适配器子进程继承 App 进程环境（含 `ANTHROPIC_MODEL` 等）；需要覆盖模型/密钥时在此填。
+- 模型选择：Claude 适配器走 `ANTHROPIC_MODEL` 环境变量（不自报 configOptions）；codex-acp 等自报 `configOptions` 的适配器，其模型/effort 经 `session/set_config_option` 切换（picker UI 待接入）。
+- PATH 已自动按登录 shell 增强（`ShellEnvironment`），GUI 启动也能找到 `npx`/`node`。

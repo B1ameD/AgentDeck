@@ -247,6 +247,134 @@ final class ACPSessionTests: XCTestCase {
         XCTAssertEqual(transport.lastConfig?.value, "claude-opus-4-8")
     }
 
+    // MARK: - 阶段 3：续接 / fs / 附件 / 多 agent
+
+    func testACPResumesRestoredSessionWhenSupported() async {
+        let transport = FakeACPTransport(scripted: [.completed(stopReason: "end_turn")], supportsResume: true)
+        let session = AgentSession(
+            agent: acpAgent(),
+            workingDirectory: FileManager.default.temporaryDirectory,
+            permissionDecider: { _ in .allow },
+            acpTransport: transport,
+            restoredBackendSessionID: "prior-session-xyz"
+        )
+
+        await session.send("继续之前的对话")
+
+        XCTAssertEqual(transport.resumeCount, 1, "应 resume 而非新建")
+        XCTAssertEqual(transport.newSessionCount, 0)
+        XCTAssertEqual(transport.resumedSessionID, "prior-session-xyz")
+        XCTAssertEqual(session.backendSessionID, "prior-session-xyz")
+    }
+
+    func testACPFallsBackToNewSessionWhenResumeUnsupported() async {
+        let transport = FakeACPTransport(scripted: [.completed(stopReason: "end_turn")], supportsResume: false)
+        let session = AgentSession(
+            agent: acpAgent(),
+            workingDirectory: FileManager.default.temporaryDirectory,
+            permissionDecider: { _ in .allow },
+            acpTransport: transport,
+            restoredBackendSessionID: "prior-session-xyz"
+        )
+
+        await session.send("hi")
+
+        XCTAssertEqual(transport.resumeCount, 0)
+        XCTAssertEqual(transport.newSessionCount, 1, "不支持 resume → 新建")
+    }
+
+    func testACPBackendSessionIDPersistsForReopen() async {
+        let transport = FakeACPTransport(scripted: [.completed(stopReason: "end_turn")])
+        let session = AgentSession(
+            agent: acpAgent(),
+            workingDirectory: FileManager.default.temporaryDirectory,
+            permissionDecider: { _ in .allow },
+            acpTransport: transport
+        )
+        XCTAssertNil(session.backendSessionID)
+        await session.send("hi")
+        XCTAssertEqual(session.backendSessionID, "s1") // 新建后暴露 sessionId，供持久化→重开 resume
+    }
+
+    func testACPAttachmentsBecomeResourceLinkBlocks() async {
+        let transport = FakeACPTransport(scripted: [.completed(stopReason: "end_turn")])
+        let session = AgentSession(
+            agent: acpAgent(),
+            workingDirectory: FileManager.default.temporaryDirectory,
+            permissionDecider: { _ in .allow },
+            acpTransport: transport
+        )
+
+        await session.send("看这两个文件", attachments: [URL(filePath: "/tmp/a.txt"), URL(filePath: "/tmp/b.txt")])
+
+        XCTAssertEqual(transport.lastPromptBlockCount, 3) // 1 文本 + 2 resource_link
+        XCTAssertEqual(transport.lastPromptText, "看这两个文件")
+    }
+
+    func testACPFsCallbacksReadWriteDisk() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let handlers = AgentSession(
+            agent: acpAgent(), workingDirectory: dir, permissionDecider: { _ in .allow }
+        ).makeACPHandlers()
+
+        // 写
+        let ok = await handlers.onWriteTextFile("note.md", "hello acp")
+        XCTAssertTrue(ok)
+        XCTAssertEqual(try String(contentsOf: dir.appendingPathComponent("note.md"), encoding: .utf8), "hello acp")
+        // 读
+        let read = await handlers.onReadTextFile("note.md")
+        XCTAssertEqual(read, "hello acp")
+    }
+
+    func testTwoACPSessionsAreIndependent() async {
+        let t1 = FakeACPTransport(scripted: [
+            .update(update("agent_message_chunk", extra: ["content": .object(["type": .string("text"), "text": .string("one")])])),
+            .completed(stopReason: "end_turn")
+        ])
+        let t2 = FakeACPTransport(scripted: [
+            .update(update("agent_message_chunk", extra: ["content": .object(["type": .string("text"), "text": .string("two")])])),
+            .completed(stopReason: "end_turn")
+        ])
+        let s1 = AgentSession(agent: acpAgent(), workingDirectory: FileManager.default.temporaryDirectory,
+                              permissionDecider: { _ in .allow }, acpTransport: t1)
+        let s2 = AgentSession(agent: acpAgent(), workingDirectory: FileManager.default.temporaryDirectory,
+                              permissionDecider: { _ in .allow }, acpTransport: t2)
+
+        await s1.send("a")
+        await s2.send("b")
+
+        XCTAssertEqual(s1.messages.last?.text, "one")
+        XCTAssertEqual(s2.messages.last?.text, "two")
+        XCTAssertEqual(t1.promptCount, 1)
+        XCTAssertEqual(t2.promptCount, 1)
+    }
+
+    /// 实时端到端：附件 resource_link + fs 读回调。默认跳过，ACPDECK_LIVE=1 启用。
+    /// 附一个含唯一 token 的文件，让真 Claude 适配器经 fs/read_text_file 回调读出来。
+    func testLiveACPReadsAttachmentViaFsCallback() async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["ACPDECK_LIVE"] == "1",
+                          "设 ACPDECK_LIVE=1 启用实时附件+fs 测试")
+        let token = "ZX9QK7"
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let file = dir.appendingPathComponent("secret.txt")
+        try "The secret token is \(token).".write(to: file, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        var agent = acpAgent()
+        agent.env = ["ANTHROPIC_MODEL": "claude-haiku-4-5-20251001"]
+        let session = AgentSession(agent: agent, workingDirectory: dir, permissionDecider: { _ in .allow })
+
+        await session.send("Read the attached file and reply with only the secret token in it.", attachments: [file])
+
+        XCTAssertEqual(session.status, .idle)
+        XCTAssertTrue((session.messages.last?.text ?? "").contains(token),
+                      "应经 fs 回调读到附件内容，实际：\(session.messages.last?.text ?? "<空>")")
+    }
+
     func testACPErrorSurfacesAsErrorMessage() async {
         let transport = FakeACPTransport(scripted: [], failPromptWith: ACPClientError.requestFailed(code: -32603, message: "model_not_found"))
         let session = AgentSession(
@@ -272,20 +400,25 @@ final class FakeACPTransport: ACPTransporting, @unchecked Sendable {
     private(set) var startCount = 0
     private(set) var initializeCount = 0
     private(set) var newSessionCount = 0
+    private(set) var resumeCount = 0
+    private(set) var resumedSessionID: String?
     private(set) var promptCount = 0
     private(set) var lastPromptText: String?
+    private(set) var lastPromptBlockCount = 0
     private(set) var lastModeID: String?
 
     private let configOptions: [ACPConfigOption]
     private let currentModeId: String?
+    private let supportsResume: Bool
 
     init(scripted: [ACPPromptEvent], availableModes: [ACPMode] = [], failPromptWith: Error? = nil,
-         configOptions: [ACPConfigOption] = [], currentModeId: String? = nil) {
+         configOptions: [ACPConfigOption] = [], currentModeId: String? = nil, supportsResume: Bool = false) {
         self.scripted = scripted
         self.availableModes = availableModes
         self.failPromptWith = failPromptWith
         self.configOptions = configOptions
         self.currentModeId = currentModeId
+        self.supportsResume = supportsResume
     }
 
     func start(command: String, args: [String], environment: [String: String], workingDirectory: URL) async throws {
@@ -294,10 +427,18 @@ final class FakeACPTransport: ACPTransporting, @unchecked Sendable {
 
     func initialize() async throws -> ACPAgentCapabilities {
         initializeCount += 1
+        var caps: [String: JSONValue] = ["loadSession": .bool(true)]
+        if supportsResume { caps["sessionCapabilities"] = .object(["resume": .object([:])]) }
         return ACPAgentCapabilities(from: .object([
             "protocolVersion": .number(1),
-            "agentCapabilities": .object(["loadSession": .bool(true)])
+            "agentCapabilities": .object(caps)
         ]))
+    }
+
+    func resumeSession(sessionId: String, cwd: URL) async throws -> ACPNewSession {
+        resumeCount += 1
+        resumedSessionID = sessionId
+        return ACPNewSession(sessionId: sessionId, from: .object([:]))
     }
 
     func newSession(cwd: URL, mcpServers: [JSONValue]) async throws -> ACPNewSession {
@@ -329,6 +470,7 @@ final class FakeACPTransport: ACPTransporting, @unchecked Sendable {
     func prompt(sessionId: String, content: [JSONValue]) -> AsyncThrowingStream<ACPPromptEvent, Error> {
         promptCount += 1
         lastPromptText = content.first?["text"]?.stringValue
+        lastPromptBlockCount = content.count
         let scripted = self.scripted
         let failPromptWith = self.failPromptWith
         return AsyncThrowingStream { continuation in

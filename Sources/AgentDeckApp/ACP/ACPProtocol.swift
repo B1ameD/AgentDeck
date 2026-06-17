@@ -129,10 +129,12 @@ public enum ACPCodec {
 
 // MARK: - 高层语义类型(从 result/params 投影)
 
-/// initialize 结果里的 agent 能力(spike 只取所需)。
+/// initialize 结果里的 agent 能力(取所需)。
 public struct ACPAgentCapabilities: Sendable, Equatable {
     public var protocolVersion: Int
     public var loadSession: Bool
+    /// 是否支持 session/resume（agentCapabilities.sessionCapabilities.resume 存在即支持）。
+    public var supportsResume: Bool
     public var agentName: String?
     public var authMethods: [String]
 
@@ -140,6 +142,7 @@ public struct ACPAgentCapabilities: Sendable, Equatable {
         protocolVersion = result["protocolVersion"]?.intValue ?? 0
         let caps = result["agentCapabilities"]
         loadSession = caps?["loadSession"].flatMap { if case .bool(let b) = $0 { return b }; return nil } ?? false
+        supportsResume = caps?["sessionCapabilities"]?["resume"] != nil
         agentName = result["agentInfo"]?["name"]?.stringValue
         authMethods = (result["authMethods"]?.arrayValue ?? []).compactMap {
             $0["id"]?.stringValue ?? $0.stringValue
@@ -156,7 +159,12 @@ public struct ACPNewSession: Sendable, Equatable {
 
     public init?(from result: JSONValue) {
         guard let sid = result["sessionId"]?.stringValue else { return nil }
-        sessionId = sid
+        self.init(sessionId: sid, from: result)
+    }
+
+    /// resume/load 响应不带 sessionId（已知），用调用方传入的 sessionId + 响应里的 modes/configOptions 构造。
+    public init(sessionId: String, from result: JSONValue) {
+        self.sessionId = sessionId
         let modes = result["modes"]
         currentModeId = modes?["currentModeId"]?.stringValue
         availableModes = (modes?["availableModes"]?.arrayValue ?? []).compactMap(ACPMode.init(from:))

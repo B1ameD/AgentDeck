@@ -168,6 +168,10 @@ public final class AgentSession: Identifiable {
     public private(set) var acpConfigOptions: [ACPConfigOption] = []
     /// ACP 会话当前模式 id（来自 session/new 初值与 current_mode_update）。供 UI 显示真实模式。
     public private(set) var acpCurrentModeID: String?
+    /// initialize 协商到的 agent 能力（loadSession/resume 等）。
+    private var acpCapabilities: ACPAgentCapabilities?
+    /// 从持久化恢复的 ACP sessionId：首轮若 agent 支持 resume 则续接而非新建（跨重开恢复上下文）。
+    private var acpRestoredSessionID: String?
     private static let streamingLog = Logger(subsystem: "AgentDeck", category: "opencode-stream")
     /// 「允许并记住」记下的授权目录。授权只对该目录有效——切到别的目录须重新征询，
     /// 避免把对 A 目录的许可静默套用到 B 目录（权限弹窗本就是按目录展示风险的）。
@@ -181,8 +185,10 @@ public final class AgentSession: Identifiable {
     private var stopRequested = false
     /// 后端会话连续性状态机（会话 id 捕获 / 模型切换失效 / Claude 回放策略），逻辑见 SessionContinuity.swift。
     private var sessionContinuity: SessionContinuity
-    /// CLI 返回的会话 id，用于继续对话（-s 或 --session-id）。
-    public var backendSessionID: String? { sessionContinuity.backendSessionID }
+    /// 后端会话 id，用于继续对话。ACP：当前/恢复的 sessionId（持久化后跨重开 resume）；CLI：续接状态机捕获的 id。
+    public var backendSessionID: String? {
+        agent.resolvedTransport == .acp ? (acpSessionID ?? acpRestoredSessionID) : sessionContinuity.backendSessionID
+    }
     /// 捕获 backendSessionID 时使用的模型 key，模型切换时清空会话 id。
     public var backendSessionModel: String? { sessionContinuity.backendSessionModel }
     /// Claude 输出流里实际解析到的模型 id（system/init 的顶层 `model` 或 assistant 的 `message.model`）。
@@ -243,6 +249,8 @@ public final class AgentSession: Identifiable {
         self.changeTracker = changeTracker
         self.openCodeStreamer = openCodeStreamer
         self.acpTransport = acpTransport
+        // ACP：恢复的后端 sessionId 暂存，首轮 ensureACPSession 据此 resume（而非新建）以跨重开续接上下文。
+        if agent.resolvedTransport == .acp { self.acpRestoredSessionID = restoredBackendSessionID }
         self.sessionContinuity = SessionContinuity(
             agentKind: agent.kind,
             restoredSessionID: restoredBackendSessionID,
@@ -590,9 +598,17 @@ public final class AgentSession: Identifiable {
                 environment: agent.runtimeEnvironment(),
                 workingDirectory: workingDirectory
             )
-            _ = try await transport.initialize()
-            let session = try await transport.newSession(cwd: workingDirectory, mcpServers: [])
+            let capabilities = try await transport.initialize()
+            acpCapabilities = capabilities
+            // 恢复的 sessionId + agent 支持 resume → 续接（不重放历史，本地转录已存）；否则新建。
+            let session: ACPNewSession
+            if let restored = acpRestoredSessionID, capabilities.supportsResume {
+                session = try await transport.resumeSession(sessionId: restored, cwd: workingDirectory)
+            } else {
+                session = try await transport.newSession(cwd: workingDirectory, mcpServers: [])
+            }
             acpSessionID = session.sessionId
+            acpRestoredSessionID = nil
             acpAvailableModes = session.availableModes
             acpConfigOptions = session.configOptions
             acpCurrentModeID = session.currentModeId
@@ -618,14 +634,38 @@ public final class AgentSession: Identifiable {
         return acpAvailableModes.contains { $0.id == candidate } ? candidate : nil
     }
 
-    /// 构造 ACPClient 的 agent→client 回调：权限 → 弹卡片等用户作答；fs 读写留待 phase 3（默认不接管）。
-    private func makeACPHandlers() -> ACPClientHandlers {
-        ACPClientHandlers(
+    /// 构造 ACPClient 的 agent→client 回调：权限 → 弹卡片等用户作答；fs 读写 → 真实磁盘（我们 initialize 时
+    /// advertise 了 fs 能力，agent 会把文件操作回调给我们，必须真正读写，否则 agent 读到空、写入失败）。
+    /// internal（非 private）以便单测直接驱动 fs 回调。
+    func makeACPHandlers() -> ACPClientHandlers {
+        let cwd = workingDirectory
+        return ACPClientHandlers(
             onPermission: { [weak self] toolCall, options in
                 guard let self else { return options.first(where: { $0.isAllow })?.optionId }
                 return await self.requestACPPermission(toolCall: toolCall, options: options)
+            },
+            onReadTextFile: { path in
+                let url = Self.acpResolvePath(path, cwd: cwd)
+                return try? String(contentsOf: url, encoding: .utf8)
+            },
+            onWriteTextFile: { path, content in
+                let url = Self.acpResolvePath(path, cwd: cwd)
+                do {
+                    try FileManager.default.createDirectory(
+                        at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+                    )
+                    try content.write(to: url, atomically: true, encoding: .utf8)
+                    return true
+                } catch {
+                    return false
+                }
             }
         )
+    }
+
+    /// 绝对路径直用；相对路径按会话工作目录解析。nonisolated：供 @Sendable fs 回调在 actor 外调用。
+    nonisolated private static func acpResolvePath(_ path: String, cwd: URL) -> URL {
+        path.hasPrefix("/") ? URL(fileURLWithPath: path) : cwd.appendingPathComponent(path)
     }
 
     /// 弹出权限卡片并挂起，直到用户点选（返回 optionId）或取消/停止（返回 nil）。
@@ -663,10 +703,7 @@ public final class AgentSession: Identifiable {
                 try? await transport.setMode(sessionId: sessionID, modeId: modeID)
             }
 
-            let content: [JSONValue] = [.object([
-                "type": .string("text"),
-                "text": .string(acpPromptText(prompt, attachments: attachments))
-            ])]
+            let content = acpContentBlocks(prompt, attachments: attachments)
 
             for try await event in transport.prompt(sessionId: sessionID, content: content) {
                 if Task.isCancelled { break }
@@ -705,11 +742,18 @@ public final class AgentSession: Identifiable {
         }
     }
 
-    /// 阶段 1 附件按 @路径 并入文本（结构化 ContentBlock 资源留待 phase 3）。
-    private func acpPromptText(_ prompt: String, attachments: [URL]) -> String {
-        guard !attachments.isEmpty else { return prompt }
-        let list = attachments.map { "@\($0.path)" }.joined(separator: "\n")
-        return prompt + "\n\n附件：\n" + list
+    /// 构造 prompt 的 ContentBlock 数组：文本块 + 每个附件一个 resource_link 块（ACP baseline，所有 agent 必支持）。
+    /// agent 经我们的 fs 回调读取链接文件；图片内联块（base64）留作后续增强。
+    private func acpContentBlocks(_ prompt: String, attachments: [URL]) -> [JSONValue] {
+        var blocks: [JSONValue] = [.object(["type": .string("text"), "text": .string(prompt)])]
+        for url in attachments {
+            blocks.append(.object([
+                "type": .string("resource_link"),
+                "uri": .string("file://" + url.path),
+                "name": .string(url.lastPathComponent)
+            ]))
+        }
+        return blocks
     }
 
     /// opencode 流式事件源：建立通道并返回与 `opencode run --format json` 同形态（但**增量**）的事件流。

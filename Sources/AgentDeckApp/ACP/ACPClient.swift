@@ -47,6 +47,7 @@ public protocol ACPTransporting: Sendable {
     func start(command: String, args: [String], environment: [String: String], workingDirectory: URL) async throws
     func initialize() async throws -> ACPAgentCapabilities
     func newSession(cwd: URL, mcpServers: [JSONValue]) async throws -> ACPNewSession
+    func resumeSession(sessionId: String, cwd: URL) async throws -> ACPNewSession
     func setMode(sessionId: String, modeId: String) async throws
     func setConfigOption(sessionId: String, configId: String, value: String) async throws
     func prompt(sessionId: String, content: [JSONValue]) -> AsyncThrowingStream<ACPPromptEvent, Error>
@@ -140,6 +141,15 @@ public actor ACPClient: ACPTransporting {
             throw ACPClientError.requestFailed(code: -1, message: "session/new 缺少 sessionId")
         }
         return session
+    }
+
+    /// 续接既有会话（不重放历史，本地转录已存）。需 agent 自报 resume 能力。
+    public func resumeSession(sessionId: String, cwd: URL) async throws -> ACPNewSession {
+        let result = try await request(method: "session/resume", params: [
+            "sessionId": .string(sessionId),
+            "cwd": .string(cwd.path)
+        ])
+        return ACPNewSession(sessionId: sessionId, from: result)
     }
 
     public func setMode(sessionId: String, modeId: String) async throws {
