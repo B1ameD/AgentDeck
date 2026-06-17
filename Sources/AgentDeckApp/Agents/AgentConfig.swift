@@ -168,10 +168,12 @@ public struct AgentConfig: Codable, Equatable, Identifiable, Sendable {
     /// 该后端是否能让 plan/build 模式真正生效。pi/custom 为未知 CLI，
     /// CLIInvocationBuilder 走 passthrough 不注入任何 mode 语义，故视为不支持。
     /// 单一事实来源：UI 模式芯片灰显与 /plan、/build 斜杠菜单可用性均据此判定。
+    /// ACP agent（多为 .custom kind）经 session/set_mode 切换模式，故按传输判定为支持。
     public var supportsPlanMode: Bool {
+        if resolvedTransport == .acp { return true }
         switch kind {
-        case .pi, .custom: false
-        case .claudeCode, .codex, .openCode: true
+        case .pi, .custom: return false
+        case .claudeCode, .codex, .openCode: return true
         }
     }
 

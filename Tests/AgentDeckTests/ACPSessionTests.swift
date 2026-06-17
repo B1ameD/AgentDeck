@@ -375,6 +375,11 @@ final class ACPSessionTests: XCTestCase {
                       "应经 fs 回调读到附件内容，实际：\(session.messages.last?.text ?? "<空>")")
     }
 
+    func testACPAgentSupportsPlanMode() {
+        // ACP agent 多为 .custom kind，但走 set_mode 能切模式 → 模式芯片应可用（修复切不了 plan/build）。
+        XCTAssertTrue(acpAgent().supportsPlanMode)
+    }
+
     func testACPErrorSurfacesAsErrorMessage() async {
         let transport = FakeACPTransport(scripted: [], failPromptWith: ACPClientError.requestFailed(code: -32603, message: "model_not_found"))
         let session = AgentSession(

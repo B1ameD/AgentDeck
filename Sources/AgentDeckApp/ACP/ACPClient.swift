@@ -7,11 +7,20 @@ import os
 // 现状:spike。已用 docs 里的 Python 探针实测打通 initialize→session/new→session/prompt(见 ACP_INTEGRATION_PLAN.md)。
 // 尚未接进 AgentSession / UI(phase 1)。进程 I/O 在此;纯逻辑(编解码/翻译)在 ACPProtocol/ACPEventTranslator。
 
-public enum ACPClientError: Error, Equatable {
+public enum ACPClientError: Error, Equatable, LocalizedError {
     case spawnFailed(String)
     case notInitialized
     case requestFailed(code: Int, message: String)
     case timeout
+
+    public var errorDescription: String? {
+        switch self {
+        case .spawnFailed(let detail): "ACP 适配器启动失败：\(detail)"
+        case .notInitialized: "ACP 会话尚未初始化"
+        case .requestFailed(let code, let message): "ACP 请求失败（\(code)）：\(message)"
+        case .timeout: "ACP 请求超时或连接中断"
+        }
+    }
 }
 
 /// agent→client 请求(权限 / 文件读写)的应答决策,由上层(AgentSession)注入。
