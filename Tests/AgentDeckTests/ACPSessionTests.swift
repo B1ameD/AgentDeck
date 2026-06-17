@@ -375,6 +375,33 @@ final class ACPSessionTests: XCTestCase {
                       "应经 fs 回调读到附件内容，实际：\(session.messages.last?.text ?? "<空>")")
     }
 
+    func testACPResumeFailureFallsBackToNewSession() async {
+        // 旧 sessionId 在新适配器进程里已不存在（-32002 Resource not found）→ 回退新建，不整轮报错。
+        let transport = FakeACPTransport(
+            scripted: [
+                .update(update("agent_message_chunk", extra: ["content": .object(["type": .string("text"), "text": .string("hi")])])),
+                .completed(stopReason: "end_turn")
+            ],
+            supportsResume: true,
+            failResumeWith: ACPClientError.requestFailed(code: -32002, message: "Resource not found")
+        )
+        let session = AgentSession(
+            agent: acpAgent(),
+            workingDirectory: FileManager.default.temporaryDirectory,
+            permissionDecider: { _ in .allow },
+            acpTransport: transport,
+            restoredBackendSessionID: "stale-session-id"
+        )
+
+        await session.send("继续")
+
+        XCTAssertEqual(transport.resumeCount, 1, "先尝试 resume")
+        XCTAssertEqual(transport.newSessionCount, 1, "失败后回退新建")
+        XCTAssertEqual(session.status, .idle, "整轮成功，不再报 ACP 运行出错")
+        XCTAssertEqual(session.messages.last?.text, "hi")
+        XCTAssertEqual(session.backendSessionID, "s1", "新会话 id 取代了失效的旧 id")
+    }
+
     func testACPAgentSupportsPlanMode() {
         // ACP agent 多为 .custom kind，但走 set_mode 能切模式 → 模式芯片应可用（修复切不了 plan/build）。
         XCTAssertTrue(acpAgent().supportsPlanMode)
@@ -415,15 +442,18 @@ final class FakeACPTransport: ACPTransporting, @unchecked Sendable {
     private let configOptions: [ACPConfigOption]
     private let currentModeId: String?
     private let supportsResume: Bool
+    private let failResumeWith: Error?
 
     init(scripted: [ACPPromptEvent], availableModes: [ACPMode] = [], failPromptWith: Error? = nil,
-         configOptions: [ACPConfigOption] = [], currentModeId: String? = nil, supportsResume: Bool = false) {
+         configOptions: [ACPConfigOption] = [], currentModeId: String? = nil, supportsResume: Bool = false,
+         failResumeWith: Error? = nil) {
         self.scripted = scripted
         self.availableModes = availableModes
         self.failPromptWith = failPromptWith
         self.configOptions = configOptions
         self.currentModeId = currentModeId
         self.supportsResume = supportsResume
+        self.failResumeWith = failResumeWith
     }
 
     func start(command: String, args: [String], environment: [String: String], workingDirectory: URL) async throws {
@@ -443,6 +473,7 @@ final class FakeACPTransport: ACPTransporting, @unchecked Sendable {
     func resumeSession(sessionId: String, cwd: URL) async throws -> ACPNewSession {
         resumeCount += 1
         resumedSessionID = sessionId
+        if let failResumeWith { throw failResumeWith }
         return ACPNewSession(sessionId: sessionId, from: .object([:]))
     }
 

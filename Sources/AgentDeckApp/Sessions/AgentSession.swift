@@ -601,9 +601,18 @@ public final class AgentSession: Identifiable {
             let capabilities = try await transport.initialize()
             acpCapabilities = capabilities
             // 恢复的 sessionId + agent 支持 resume → 续接（不重放历史，本地转录已存）；否则新建。
+            // 续接失败（会话不在适配器/不可跨进程恢复，如 -32002 Resource not found——重启或经中转常见）
+            // 自动回退新建：本地转录仍在 UI，仅后端不接旧上下文，避免整轮报错卡死。
             let session: ACPNewSession
             if let restored = acpRestoredSessionID, capabilities.supportsResume {
-                session = try await transport.resumeSession(sessionId: restored, cwd: workingDirectory)
+                do {
+                    session = try await transport.resumeSession(sessionId: restored, cwd: workingDirectory)
+                } catch {
+                    Self.streamingLog.warning(
+                        "ACP 续接失败（\(error.localizedDescription, privacy: .public)），回退新建会话。"
+                    )
+                    session = try await transport.newSession(cwd: workingDirectory, mcpServers: [])
+                }
             } else {
                 session = try await transport.newSession(cwd: workingDirectory, mcpServers: [])
             }
