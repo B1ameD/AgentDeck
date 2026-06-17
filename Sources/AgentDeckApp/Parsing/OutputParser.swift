@@ -527,12 +527,14 @@ public final class OutputParser {
     }
 
     // CSI (ESC[…) + OSC (ESC]…ST/BEL) + 独立 ESC 序列——编译一次，流式高频路径复用。
-    private static let ansiRegex = try! NSRegularExpression(
+    // 模式为编译期常量不会失败；try? + 兜底既避免 force_try，又确保万一为 nil 时原样返回（不剥离好过崩溃）。
+    private static let ansiRegex = try? NSRegularExpression(
         pattern: "\u{001B}(?:\\[[0-9;?]*[A-Za-z]|\\][^\u{001B}\u{0007}]*(?:\u{001B}\\\\|\u{0007})|[@-_][0-@]?)"
     )
 
     private func stripANSI(_ text: String) -> String {
+        guard let regex = Self.ansiRegex else { return text }
         let range = NSRange(text.startIndex..., in: text)
-        return Self.ansiRegex.stringByReplacingMatches(in: text, range: range, withTemplate: "")
+        return regex.stringByReplacingMatches(in: text, range: range, withTemplate: "")
     }
 }

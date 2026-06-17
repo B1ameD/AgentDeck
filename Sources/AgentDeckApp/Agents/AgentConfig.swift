@@ -15,6 +15,13 @@ public struct AgentConfig: Codable, Equatable, Identifiable, Sendable {
     public var fixedWorkingDirectory: String?
     /// 仅当 stopSignal == .customCommand 时生效：停止时执行的命令（首项为可执行文件路径）。
     public var stopCommand: [String]?
+    /// 传输方式：`cli`（默认，进程 stdout/JSONL）或 `acp`（Agent Client Protocol，JSON-RPC over stdio）。
+    /// 旧配置缺该键 → 解码为 nil → `resolvedTransport` 回落 `.cli`，不破坏现有 agent。
+    /// acp 时 command/args 指向 ACP 适配器（如 `npx -y @agentclientprotocol/claude-agent-acp`）。
+    public var transport: Transport?
+
+    /// 实际传输方式（缺省回落 cli）。
+    public var resolvedTransport: Transport { transport ?? .cli }
 
     public init(
         id: String,
@@ -28,7 +35,8 @@ public struct AgentConfig: Codable, Equatable, Identifiable, Sendable {
         supportsStop: Bool,
         stopSignal: StopSignal,
         fixedWorkingDirectory: String? = nil,
-        stopCommand: [String]? = nil
+        stopCommand: [String]? = nil,
+        transport: Transport? = nil
     ) {
         self.id = id
         self.name = name
@@ -42,6 +50,7 @@ public struct AgentConfig: Codable, Equatable, Identifiable, Sendable {
         self.stopSignal = stopSignal
         self.fixedWorkingDirectory = fixedWorkingDirectory
         self.stopCommand = stopCommand
+        self.transport = transport
     }
 
     public func validate() throws {
@@ -121,6 +130,11 @@ public struct AgentConfig: Codable, Equatable, Identifiable, Sendable {
         case interrupt
         case terminate
         case customCommand
+    }
+
+    public enum Transport: String, Codable, Equatable, Sendable {
+        case cli
+        case acp
     }
 
     public enum ValidationError: Error, Equatable {

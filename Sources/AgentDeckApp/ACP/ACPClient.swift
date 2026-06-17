@@ -36,7 +36,24 @@ public struct ACPClientHandlers: Sendable {
     }
 }
 
-public actor ACPClient {
+/// 一轮 prompt 的流式事件:逐条 session/update 的 update 体,终值为 stopReason。
+public enum ACPPromptEvent: Sendable {
+    case update(JSONValue)
+    case completed(stopReason: String)
+}
+
+/// ACP 传输抽象:便于 AgentSession 注入假实现做单测;生产用 `ACPClient`。
+public protocol ACPTransporting: Sendable {
+    func start(command: String, args: [String], environment: [String: String], workingDirectory: URL) async throws
+    func initialize() async throws -> ACPAgentCapabilities
+    func newSession(cwd: URL, mcpServers: [JSONValue]) async throws -> ACPNewSession
+    func setMode(sessionId: String, modeId: String) async throws
+    func prompt(sessionId: String, content: [JSONValue]) -> AsyncThrowingStream<ACPPromptEvent, Error>
+    func cancel(sessionId: String) async
+    func shutdown() async
+}
+
+public actor ACPClient: ACPTransporting {
     private static let log = Logger(subsystem: "AgentDeck", category: "acp")
 
     private let process = Process()
@@ -47,7 +64,6 @@ public actor ACPClient {
     private var nextID = 0
     private var pendingResponses: [Int: CheckedContinuation<JSONValue, Error>] = [:]
     private var sessionUpdateSink: ((JSONValue) -> Void)?
-    private var promptCompletion: CheckedContinuation<String, Error>?  // stopReason
     private var handlers: ACPClientHandlers
     private var stdoutBuffer = Data()
     private var started = false
@@ -59,13 +75,16 @@ public actor ACPClient {
     // MARK: - 生命周期
 
     /// 拉起适配器子进程并开始读 stdout。command/args 形如 ("npx", ["-y","@agentclientprotocol/claude-agent-acp"])。
-    public func start(command: String, args: [String], environment: [String: String], workingDirectory: URL) throws {
+    public func start(command: String, args: [String], environment: [String: String], workingDirectory: URL) async throws {
         guard !started else { return }
         process.executableURL = resolveExecutable(command)
         process.arguments = args
         process.currentDirectoryURL = workingDirectory
         var env = ProcessInfo.processInfo.environment
         for (k, v) in environment { env[k] = v }
+        // GUI app 继承 launchd 最小 PATH（无 /opt/homebrew/bin / nvm），npx/node 会找不到（127）。
+        // 调用方未显式给 PATH 时补登录 shell 级 PATH，与 ProcessRunner 一致。
+        if environment["PATH"] == nil { env["PATH"] = ShellEnvironment.enrichedPATH }
         process.environment = env
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
@@ -128,19 +147,41 @@ public actor ACPClient {
         ])
     }
 
-    /// 发送一轮 prompt,流式回调 session/update 的 update 体,返回 stopReason。
-    public func prompt(
+    /// 发送一轮 prompt,流式产出 session/update,终值 `.completed(stopReason)`。
+    /// 流被取消(消费方 break/onTermination)时向 agent 发 session/cancel。
+    public nonisolated func prompt(
+        sessionId: String,
+        content: [JSONValue]
+    ) -> AsyncThrowingStream<ACPPromptEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task { await self.beginPrompt(sessionId: sessionId, content: content, continuation: continuation) }
+            continuation.onTermination = { reason in
+                task.cancel()
+                if case .cancelled = reason {
+                    Task { await self.cancel(sessionId: sessionId) }
+                }
+            }
+        }
+    }
+
+    private func beginPrompt(
         sessionId: String,
         content: [JSONValue],
-        onUpdate: @escaping (JSONValue) -> Void
-    ) async throws -> String {
-        sessionUpdateSink = onUpdate
-        defer { sessionUpdateSink = nil }
-        let result = try await request(method: "session/prompt", params: [
-            "sessionId": .string(sessionId),
-            "prompt": .array(content)
-        ])
-        return result["stopReason"]?.stringValue ?? "end_turn"
+        continuation: AsyncThrowingStream<ACPPromptEvent, Error>.Continuation
+    ) async {
+        sessionUpdateSink = { continuation.yield(.update($0)) }
+        do {
+            let result = try await request(method: "session/prompt", params: [
+                "sessionId": .string(sessionId),
+                "prompt": .array(content)
+            ])
+            sessionUpdateSink = nil
+            continuation.yield(.completed(stopReason: result["stopReason"]?.stringValue ?? "end_turn"))
+            continuation.finish()
+        } catch {
+            sessionUpdateSink = nil
+            continuation.finish(throwing: error)
+        }
     }
 
     public func cancel(sessionId: String) {

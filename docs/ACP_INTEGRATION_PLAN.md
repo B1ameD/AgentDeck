@@ -115,9 +115,9 @@ public var transport: Transport = .cli
 
 ## 7. 分期落地
 
-- **阶段 0(spike,= 本文档的 C):** 手搓最小 `ACPClient`,跑通 `initialize → session/new → session/prompt`,把 `session/update` 打到日志。对**一个**适配器(优先 codex-acp 的 release 二进制,或 `npx acpx claude`)验证。功能旗标后藏,不接 UI。**产出:传输层成立的证据。**
-- **阶段 1:** 接 `ACPEventTranslator` → `OutputEvent`,单个 ACP agent 在真 UI 里能聊天 + 流式 + 取消。
-- **阶段 2:** 权限(`request_permission`↔卡片)、模式(plan/build↔set_mode)、配置项(模型/effort↔set_config_option)、usage(#28)。
+- **阶段 0(spike) ✅ 完成:** 手搓 `ACPClient`,跑通 `initialize → session/new → session/prompt`。对 `npx -y @agentclientprotocol/claude-agent-acp` 实测打通(protocolVersion=1、authMethods=[]、plan/bypassPermissions 模式自报、usage_update 带 token+USD)。
+- **阶段 1 ✅ 完成:** `AgentConfig.transport`(cli|acp,可选缺省回落 cli);`AgentSession.performSendACP/consumeACP` 独立路径——经 `ACPEventTranslator` 把 `session/update` 翻成 `OutputEvent`,复用现有 `apply`/气泡装配/计时;`ACPTransporting` 协议便于注入测试;跨轮复用同一适配器进程与 sessionId(多轮上下文);`stop()` 发 `session/cancel` 干净收尾;plan/build→`set_mode`(仅当 agent 自报该模式);PATH 经 `ShellEnvironment` 增强避免 GUI launchd 最小 PATH 找不到 npx。验证:`ACPSessionTests`(假传输 4 例:流式累加/跨轮复用/plan 映射/错误冒泡)+ `testLiveACPThroughAgentSession`(真适配器端到端,ACPDECK_LIVE=1,回 ACP_OK)。提供 `~/Library/Application Support/AgentDeck/Agents/claude-acp.json` 即开即用。**未做(留后续阶段):权限卡片、模型/effort 配置项 UI、附件结构化块、UI 上的模式芯片联动。**
+- **阶段 2:** 权限(`request_permission`↔卡片,接 `pendingPermission`/`PermissionBroker`)、配置项(模型/effort↔`set_config_option`,agent 自报选项动态渲染)、usage 面板细化;UI 模式芯片 ↔ `current_mode_update`。
 - **阶段 3:** 续接(load/resume)、会话生命周期(list/close/delete ↔ Recents/#23)、fs 回调 ↔ #7 diff、附件 ↔ #11/#12。
 - **阶段 4:** 多 agent + 对每个 agent 的"ACP 优先,失败回退 CLI"策略;文档化如何声明一个 ACP agent。
 

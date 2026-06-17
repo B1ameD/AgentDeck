@@ -147,6 +147,11 @@ public final class AgentSession: Identifiable {
     private let permissionDecider: PermissionDecider
     /// opencode 流式通道（注入；nil 表示退回非流式 `opencode run`）。仅 .openCode 会话使用。
     private let openCodeStreamer: OpenCodeStreaming?
+    /// ACP 传输（agent.resolvedTransport == .acp 时使用）。注入用于测试；为 nil 时惰性创建 ACPClient。
+    /// 跨轮复用同一会话（适配器子进程 + sessionId 常驻），获得多轮上下文。
+    private var acpTransport: ACPTransporting?
+    private var acpSessionID: String?
+    private var acpAvailableModes: [ACPMode] = []
     private static let streamingLog = Logger(subsystem: "AgentDeck", category: "opencode-stream")
     /// 「允许并记住」记下的授权目录。授权只对该目录有效——切到别的目录须重新征询，
     /// 避免把对 A 目录的许可静默套用到 B 目录（权限弹窗本就是按目录展示风险的）。
@@ -197,6 +202,7 @@ public final class AgentSession: Identifiable {
         promptOptimizer: any PromptOptimizing = PromptOptimizationClient(),
         changeTracker: any WorkspaceChangeTracking = GitWorkspaceChangeTracker(),
         openCodeStreamer: OpenCodeStreaming? = nil,
+        acpTransport: ACPTransporting? = nil,
         restoredBackendSessionID: String? = nil,
         restoredBackendSessionModel: String? = nil,
         restoredUsage: SessionUsage? = nil
@@ -220,6 +226,7 @@ public final class AgentSession: Identifiable {
         self.promptOptimizer = promptOptimizer
         self.changeTracker = changeTracker
         self.openCodeStreamer = openCodeStreamer
+        self.acpTransport = acpTransport
         self.sessionContinuity = SessionContinuity(
             agentKind: agent.kind,
             restoredSessionID: restoredBackendSessionID,
@@ -414,6 +421,11 @@ public final class AgentSession: Identifiable {
     }
 
     private func performSend(prompt: String, attachments: [URL], broadcastID: String? = nil) async {
+        // ACP 传输走独立路径（不经 CLIInvocationBuilder / OutputParser），CLI 路径零改动。
+        if agent.resolvedTransport == .acp {
+            await performSendACP(prompt: prompt, attachments: attachments, broadcastID: broadcastID)
+            return
+        }
         let continuity = claudeContinuityStrategy(for: prompt)
         let externalSessionID = agent.kind == .claudeCode
             ? continuity.externalSessionID
@@ -506,6 +518,136 @@ public final class AgentSession: Identifiable {
         await appendChangedFileLinks(since: changeBaseline)
         finishActiveRunTiming()
         onPersist?()
+    }
+
+    // MARK: - ACP 路径（阶段 1：聊天 / 流式 / 取消）
+
+    private func performSendACP(prompt: String, attachments: [URL], broadcastID: String?) async {
+        messages.append(ChatMessage(role: .user, text: prompt, broadcastID: broadcastID))
+        activeRunStartedAt = Date()
+        activeRunAssistantIDs = []
+        status = .running
+        timedOut = false
+        stopRequested = false
+
+        let changeBaseline = await changeTracker.snapshot(in: workingDirectory)
+        if stopRequested {
+            lastChangedPaths = []
+            lastTurnDiffSummary = nil
+            recordTermination()
+            finishActiveRunTiming()
+            onPersist?()
+            return
+        }
+
+        let watchdog: Task<Void, Never>?
+        if let timeout {
+            watchdog = Task {
+                try? await Task.sleep(for: timeout)
+                guard !Task.isCancelled, self.isRunning else { return }
+                self.timedOut = true
+                self.runTask?.cancel()
+            }
+        } else {
+            watchdog = nil
+        }
+
+        let task = Task { await self.consumeACP(prompt: prompt, attachments: attachments) }
+        runTask = task
+        _ = await task.value
+        runTask = nil
+
+        watchdog?.cancel()
+        await appendChangedFileLinks(since: changeBaseline)
+        finishActiveRunTiming()
+        onPersist?()
+    }
+
+    /// 惰性建立 ACP 会话：首轮 start → initialize → session/new；后续轮复用同一适配器进程与 sessionId。
+    private func ensureACPSession() async throws -> ACPTransporting {
+        let transport = acpTransport ?? ACPClient()
+        acpTransport = transport
+        if acpSessionID == nil {
+            try await transport.start(
+                command: agent.command,
+                args: agent.args,
+                environment: agent.runtimeEnvironment(),
+                workingDirectory: workingDirectory
+            )
+            _ = try await transport.initialize()
+            let session = try await transport.newSession(cwd: workingDirectory, mcpServers: [])
+            acpSessionID = session.sessionId
+            acpAvailableModes = session.availableModes
+        }
+        return transport
+    }
+
+    /// plan/build → ACP 会话模式（仅当 agent 自报了该模式 id 时才设；否则用默认模式 + 客户端自动放行权限）。
+    private func acpModeID(for mode: InteractionMode) -> String? {
+        let candidate: String
+        switch mode {
+        case .plan: candidate = "plan"
+        case .build: candidate = "bypassPermissions"
+        }
+        return acpAvailableModes.contains { $0.id == candidate } ? candidate : nil
+    }
+
+    private func consumeACP(prompt: String, attachments: [URL]) async -> AgentRunOutcome {
+        var assistantIndex: Int?
+        var producedMessage = false
+        do {
+            let transport = try await ensureACPSession()
+            guard let sessionID = acpSessionID else {
+                throw ACPClientError.requestFailed(code: -1, message: "未能建立 ACP 会话")
+            }
+            if let modeID = acpModeID(for: interactionMode) {
+                try? await transport.setMode(sessionId: sessionID, modeId: modeID)
+            }
+
+            let content: [JSONValue] = [.object([
+                "type": .string("text"),
+                "text": .string(acpPromptText(prompt, attachments: attachments))
+            ])]
+
+            for try await event in transport.prompt(sessionId: sessionID, content: content) {
+                if Task.isCancelled { break }
+                switch event {
+                case .update(let params):
+                    let translation = ACPEventTranslator.translate(updateParams: params)
+                    if let turn = translation.usage { recordTurnUsage(turn) }
+                    for parsed in translation.events {
+                        apply(parsed, assistantIndex: &assistantIndex, producedMessage: &producedMessage)
+                    }
+                case .completed:
+                    break // stopReason 已由流结束表达；refusal/cancelled 的 UI 细化留待 phase 2
+                }
+            }
+
+            if Task.isCancelled {
+                recordTermination()
+                return AgentRunOutcome(exitCode: -2, stderr: "", producedMessage: producedMessage)
+            }
+            if !producedMessage {
+                appendAssistantText("（agent 没有任何输出）", assistantIndex: &assistantIndex)
+            }
+            status = .idle
+            return AgentRunOutcome(exitCode: 0, stderr: "", producedMessage: producedMessage)
+        } catch {
+            if Task.isCancelled {
+                recordTermination()
+                return AgentRunOutcome(exitCode: -2, stderr: "", producedMessage: producedMessage)
+            }
+            messages.append(ChatMessage(role: .error, text: "ACP 运行出错：\(error.localizedDescription)"))
+            status = .failed(error.localizedDescription)
+            return AgentRunOutcome(exitCode: -1, stderr: error.localizedDescription, producedMessage: producedMessage)
+        }
+    }
+
+    /// 阶段 1 附件按 @路径 并入文本（结构化 ContentBlock 资源留待 phase 3）。
+    private func acpPromptText(_ prompt: String, attachments: [URL]) -> String {
+        guard !attachments.isEmpty else { return prompt }
+        let list = attachments.map { "@\($0.path)" }.joined(separator: "\n")
+        return prompt + "\n\n附件：\n" + list
     }
 
     /// opencode 流式事件源：建立通道并返回与 `opencode run --format json` 同形态（但**增量**）的事件流。
@@ -610,6 +752,16 @@ public final class AgentSession: Identifiable {
     public func stop() {
         guard isRunning, agent.supportsStop else { return }
         stopRequested = true
+
+        // ACP：向 agent 发 session/cancel（prompt 响应随即以 cancelled 返回，干净收尾），并取消消费任务。
+        if agent.resolvedTransport == .acp {
+            if let sessionID = acpSessionID, let transport = acpTransport {
+                Task { await transport.cancel(sessionId: sessionID) }
+            }
+            runTask?.cancel()
+            return
+        }
+
         guard let runTask else { return }
 
         if agent.stopSignal == .customCommand,
