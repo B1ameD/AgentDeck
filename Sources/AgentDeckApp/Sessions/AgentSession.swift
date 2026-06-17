@@ -598,7 +598,7 @@ public final class AgentSession: Identifiable {
             try await transport.start(
                 command: agent.command,
                 args: agent.args,
-                environment: agent.runtimeEnvironment(),
+                environment: acpEnvironment(),
                 workingDirectory: workingDirectory
             )
             let capabilities = try await transport.initialize()
@@ -626,6 +626,17 @@ public final class AgentSession: Identifiable {
             acpCurrentModeID = session.currentModeId
         }
         return transport
+    }
+
+    /// ACP 适配器的运行环境：在 agent.env 基础上，把用户选中的模型作为 ANTHROPIC_MODEL 传入
+    /// （claude/anthropic 系适配器据此切模型；选 "default" 则不覆盖、用 agent.env/适配器自身默认）。
+    private func acpEnvironment() -> [String: String] {
+        var env = agent.runtimeEnvironment()
+        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty, trimmed != "default" {
+            env["ANTHROPIC_MODEL"] = trimmed
+        }
+        return env
     }
 
     /// 设置 ACP 会话配置项（模型/effort 等）。会话尚未建立则忽略。供未来配置项 UI 调用。
@@ -1378,8 +1389,21 @@ public final class AgentSession: Identifiable {
     /// 用户在 /model 选择器改选模型：更新选择并清掉上一次解析到的具体版本，
     /// 避免芯片仍显示上一个模型的版本——下一轮运行会重新捕获。
     public func setSelectedModel(_ newModel: String) {
+        let changed = model != newModel
         model = newModel
         sessionContinuity.clearResolvedModel()
+        // ACP：模型由适配器启动时的 ANTHROPIC_MODEL 决定，已建立的会话用的是旧模型 →
+        // 拆掉当前适配器会话，下一轮 ensureACPSession 用新模型重启（本地转录保留）。
+        if changed, agent.resolvedTransport == .acp { resetACPSession() }
+    }
+
+    /// 拆除当前 ACP 适配器会话（关进程、清 sessionId）。下一次发送会用最新 env（含选中模型）重新建立。
+    private func resetACPSession() {
+        let transport = acpTransport
+        acpTransport = nil
+        acpSessionID = nil
+        acpCapabilities = nil
+        if let transport { Task { await transport.shutdown() } }
     }
 
     private var currentBackendModelKey: String { SessionContinuity.modelKey(model) }

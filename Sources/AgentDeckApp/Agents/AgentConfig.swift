@@ -22,6 +22,9 @@ public struct AgentConfig: Codable, Equatable, Identifiable, Sendable {
 
     /// 实际传输方式（缺省回落 cli）。
     public var resolvedTransport: Transport { transport ?? .cli }
+    /// 可选的可选模型列表，供模型选择器展示（ACP/第三方中转等无法自动列模型时由用户在配置里声明）。
+    /// 缺省 nil → 选择器回落到 default + 自由文本输入。
+    public var models: [String]?
 
     public init(
         id: String,
@@ -36,7 +39,8 @@ public struct AgentConfig: Codable, Equatable, Identifiable, Sendable {
         stopSignal: StopSignal,
         fixedWorkingDirectory: String? = nil,
         stopCommand: [String]? = nil,
-        transport: Transport? = nil
+        transport: Transport? = nil,
+        models: [String]? = nil
     ) {
         self.id = id
         self.name = name
@@ -51,6 +55,7 @@ public struct AgentConfig: Codable, Equatable, Identifiable, Sendable {
         self.fixedWorkingDirectory = fixedWorkingDirectory
         self.stopCommand = stopCommand
         self.transport = transport
+        self.models = models
     }
 
     public func validate() throws {

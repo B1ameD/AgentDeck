@@ -9,6 +9,10 @@ public enum ModelCatalog {
         workingDirectory: URL,
         runner: ProcessRunner = ProcessRunner()
     ) async -> [String] {
+        // 用户在配置里声明的模型列表优先（ACP/第三方中转等无法自动列模型时的来源）。
+        if let declared = agent.models, !declared.isEmpty { return declared }
+        // ACP 适配器没有「列模型」CLI 命令——不要去跑 `<command> models`（会是 `npx models` 之类的无效调用）。
+        if agent.resolvedTransport == .acp { return [] }
         if agent.kind == .claudeCode {
             return await fetchClaudeSnapshot().candidates
         }

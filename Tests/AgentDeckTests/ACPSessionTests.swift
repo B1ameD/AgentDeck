@@ -451,6 +451,50 @@ final class ACPSessionTests: XCTestCase {
         XCTAssertEqual(session.backendSessionID, "s1", "新会话 id 取代了失效的旧 id")
     }
 
+    func testACPPassesSelectedModelAsAnthropicModel() async {
+        let transport = FakeACPTransport(scripted: [.completed(stopReason: "end_turn")])
+        let session = AgentSession(
+            agent: acpAgent(),
+            workingDirectory: FileManager.default.temporaryDirectory,
+            permissionDecider: { _ in .allow },
+            acpTransport: transport
+        )
+        session.model = "mimo-v2.5" // 选中具体模型
+
+        await session.send("hi")
+
+        XCTAssertEqual(transport.lastStartEnv?["ANTHROPIC_MODEL"], "mimo-v2.5", "选中模型应作为 ANTHROPIC_MODEL 传给适配器")
+    }
+
+    func testACPDefaultModelDoesNotOverrideAnthropicModel() async {
+        let transport = FakeACPTransport(scripted: [.completed(stopReason: "end_turn")])
+        var agent = acpAgent()
+        agent.env = ["ANTHROPIC_MODEL": "mimo-v2.5-pro"]
+        let session = AgentSession(
+            agent: agent,
+            workingDirectory: FileManager.default.temporaryDirectory,
+            permissionDecider: { _ in .allow },
+            acpTransport: transport
+        )
+        // 默认 model == "default" → 不覆盖，沿用 agent.env 的默认模型
+        await session.send("hi")
+        XCTAssertEqual(transport.lastStartEnv?["ANTHROPIC_MODEL"], "mimo-v2.5-pro")
+    }
+
+    func testACPModelChangeResetsSession() async {
+        let transport = FakeACPTransport(scripted: [.completed(stopReason: "end_turn")])
+        let session = AgentSession(
+            agent: acpAgent(),
+            workingDirectory: FileManager.default.temporaryDirectory,
+            permissionDecider: { _ in .allow },
+            acpTransport: transport
+        )
+        await session.send("a")
+        XCTAssertEqual(session.backendSessionID, "s1") // 会话已建立
+        session.setSelectedModel("mimo-v2.5")
+        XCTAssertNil(session.backendSessionID, "改模型应重置 ACP 会话，下一轮用新模型重启")
+    }
+
     func testACPAgentSupportsPlanMode() {
         // ACP agent 多为 .custom kind，但走 set_mode 能切模式 → 模式芯片应可用（修复切不了 plan/build）。
         XCTAssertTrue(acpAgent().supportsPlanMode)
@@ -510,8 +554,10 @@ final class FakeACPTransport: ACPTransporting, @unchecked Sendable {
         self.failResumeWith = failResumeWith
     }
 
+    private(set) var lastStartEnv: [String: String]?
     func start(command: String, args: [String], environment: [String: String], workingDirectory: URL) async throws {
         startCount += 1
+        lastStartEnv = environment
     }
 
     func initialize() async throws -> ACPAgentCapabilities {
