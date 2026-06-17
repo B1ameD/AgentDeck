@@ -18,7 +18,7 @@ final class CLIInvocationBuilderTests: XCTestCase {
         XCTAssertEqual(invocation.arguments.prefix(7), ["-p", "--model", "sonnet", "--effort", "high", "--permission-mode", "plan"])
         XCTAssertEqual(invocation.arguments[7], "--append-system-prompt")
         XCTAssertTrue(invocation.arguments[8].contains("[Plan Mode]"))
-        XCTAssertEqual(invocation.arguments.suffix(2), ["--continue", "do it"])
+        XCTAssertEqual(invocation.arguments.suffix(3), ["--continue", "--", "do it"])
         XCTAssertNil(invocation.stdin)
     }
 
@@ -52,7 +52,7 @@ final class CLIInvocationBuilderTests: XCTestCase {
         )
 
         XCTAssertEqual(invocation, CLIInvocation(
-            arguments: ["-p", "--permission-mode", "bypassPermissions", "edit test.md"],
+            arguments: ["-p", "--permission-mode", "bypassPermissions", "--", "edit test.md"],
             stdin: nil
         ))
     }
@@ -70,7 +70,7 @@ final class CLIInvocationBuilderTests: XCTestCase {
         )
 
         XCTAssertEqual(invocation, CLIInvocation(
-            arguments: ["-p", "--permission-mode", "bypassPermissions", "first"],
+            arguments: ["-p", "--permission-mode", "bypassPermissions", "--", "first"],
             stdin: nil
         ))
     }
@@ -89,7 +89,7 @@ final class CLIInvocationBuilderTests: XCTestCase {
         )
 
         XCTAssertEqual(invocation, CLIInvocation(
-            arguments: ["-p", "--permission-mode", "bypassPermissions", "--resume", "claude-session-123", "second"],
+            arguments: ["-p", "--permission-mode", "bypassPermissions", "--resume", "claude-session-123", "--", "second"],
             stdin: nil
         ))
     }
@@ -106,7 +106,7 @@ final class CLIInvocationBuilderTests: XCTestCase {
         )
 
         XCTAssertEqual(invocation, CLIInvocation(
-            arguments: ["-p", "--permission-mode", "bypassPermissions", "review\n\n附件：\n@/tmp/a.txt"],
+            arguments: ["-p", "--permission-mode", "bypassPermissions", "--", "review\n\n附件：\n@/tmp/a.txt"],
             stdin: nil
         ))
     }
@@ -123,7 +123,7 @@ final class CLIInvocationBuilderTests: XCTestCase {
             resumeSessionID: "abc-123"
         )
         XCTAssertEqual(invocation, CLIInvocation(
-            arguments: ["-p", "--permission-mode", "bypassPermissions", "--resume", "abc-123", "go"],
+            arguments: ["-p", "--permission-mode", "bypassPermissions", "--resume", "abc-123", "--", "go"],
             stdin: nil
         ))
     }
@@ -139,7 +139,7 @@ final class CLIInvocationBuilderTests: XCTestCase {
             attachments: []
         )
         XCTAssertEqual(invocation, CLIInvocation(
-            arguments: ["-p", "--permission-mode", "bypassPermissions", "--resume", "go"],
+            arguments: ["-p", "--permission-mode", "bypassPermissions", "--resume", "--", "go"],
             stdin: nil
         ))
     }
@@ -222,7 +222,7 @@ final class CLIInvocationBuilderTests: XCTestCase {
                 attachments: []
             )
             XCTAssertEqual(invocation, CLIInvocation(
-                arguments: ["-p", "--effort", raw, "--permission-mode", "bypassPermissions", "go"],
+                arguments: ["-p", "--effort", raw, "--permission-mode", "bypassPermissions", "--", "go"],
                 stdin: nil
             ))
         }

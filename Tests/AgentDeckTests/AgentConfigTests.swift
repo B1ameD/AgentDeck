@@ -182,7 +182,13 @@ final class AgentConfigTests: XCTestCase {
             stopSignal: .interrupt
         )
 
-        XCTAssertEqual(config.runtimeEnvironment()["OPENCODE_CONFIG_CONTENT"], #"{"snapshot":false}"#)
+        let content = config.runtimeEnvironment()["OPENCODE_CONFIG_CONTENT"]
+        XCTAssertTrue(content?.contains(#""snapshot":false"#) ?? false)
+        // 工具权限在配置层预放行（非交互自治）；交互类仍 deny。
+        XCTAssertTrue(content?.contains(#""edit":"allow""#) ?? false)
+        XCTAssertTrue(content?.contains(#""bash":"allow""#) ?? false)
+        XCTAssertTrue(content?.contains(#""webfetch":"allow""#) ?? false)
+        XCTAssertTrue(content?.contains(#""question":"deny""#) ?? false)
     }
 
     func testOpenCodeRuntimeEnvironmentKeepsExplicitConfigContent() {

@@ -56,6 +56,8 @@ struct ComposerView: View {
     @State private var hoveringOptimize = false
     @State private var hoveringContext = false
     @State private var showingCompare = false // 广播对比 sheet(#27)
+    @State private var showingEffortSlider = false // 点 effort 芯片弹出火苗滑块 popover
+    @State private var forceModelMenu = false // 点模型芯片打开模型菜单（不写入输入框，保留草稿）
     @AppStorage(InterfaceFont.storageKey) private var interfaceFontID = InterfaceFont.defaultID
     @AppStorage(AppFontSize.storageKey) private var appFontSize = AppFontSize.defaultValue
     @AppStorage(PromptOptimizationMode.storageKey) private var promptOptimizationModeID = PromptOptimizationMode.defaultID
@@ -72,6 +74,13 @@ struct ComposerView: View {
 
     private var slashInput: SlashInput {
         guard modePresentation.resolvesSlashCommands else { return .hidden }
+        // 模型芯片点开：直接展示模型菜单（query 为空＝全量），不依赖输入框文本 → 草稿不受影响。
+        if forceModelMenu {
+            return .models(
+                query: "",
+                suggestions: SlashCommandMenu.modelSuggestions(for: session.agent.kind, query: "", catalog: modelCatalog)
+            )
+        }
         return SlashCommandMenu.resolve(for: prompt, agent: session.agent, extraCommands: nativeCommands, modelCatalog: modelCatalog)
     }
 
@@ -102,7 +111,7 @@ struct ComposerView: View {
     /// Esc：菜单打开时清空斜杠输入以关闭（返回 true 表示已消费）。
     private func handleEscape() -> Bool {
         guard menuIsOpen else { return false }
-        prompt = ""
+        if forceModelMenu { forceModelMenu = false } else { prompt = "" } // 芯片开的模型菜单：关菜单留草稿
         return true
     }
 
@@ -119,15 +128,27 @@ struct ComposerView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            slashMenu
-            composerDock
+        composerDock
+            .overlay(alignment: .topLeading) {
+                // 指令/模型菜单浮在输入区上方 8pt，盖住对话区文本——而非把对话顶走。
+                // overlay 不计入 ComposerView 高度 → 底部 safeAreaInset 不变 → 对话区不被压缩上移。
+                slashMenu
+                    .alignmentGuide(.top) { $0[.bottom] + 8 }
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 5)
+            .padding(.bottom, 6)
+            .frame(maxWidth: .infinity) // 填满父布局给定的宽度（由 ProportionalWidthLayout 约束为 0.8 列宽并居中）
+        .onChange(of: prompt) { _, newValue in
+            optimizeError = nil
+            session.draft = newValue // 随键入存草稿到会话，切标签/重建视图不丢失
+            if forceModelMenu { forceModelMenu = false } // 一旦键入，让位给基于输入的菜单解析
         }
-        .padding(.horizontal, 10)
-        .padding(.top, 5)
-        .padding(.bottom, 6)
-        .frame(maxWidth: .infinity) // 填满父布局给定的宽度（由 ProportionalWidthLayout 约束为 0.8 列宽并居中）
-        .onChange(of: prompt) { _, _ in optimizeError = nil }
+        .onAppear {
+            // 视图(重)建时从会话恢复草稿——ChatPaneView .id(session.id) 切标签会重建本视图，
+            // 默认 @State 会被重置为空；这里把未发送内容找回。
+            if prompt.isEmpty, !session.draft.isEmpty { prompt = session.draft }
+        }
         .onChange(of: modelMenuIsOpen) { wasOpen, isOpen in
             if ModelMenuRefreshTrigger.shouldRefresh(
                 agentKind: session.agent.kind,
@@ -141,7 +162,9 @@ struct ComposerView: View {
             if menuOpen != open { menuOpen = open }
         }
         .onChange(of: menuOpen) { _, open in
-            if !open && menuIsOpen { prompt = "" } // 父级遮罩点击 → 关闭菜单
+            if !open && menuIsOpen { // 父级遮罩点击 → 关闭菜单
+                if forceModelMenu { forceModelMenu = false } else { prompt = "" }
+            }
         }
         .task(id: session.workingDirectory) {
             await discoverNativeCommands()
@@ -262,10 +285,21 @@ struct ComposerView: View {
                 action: cycleMode
             )
             ControlChip(text: modelLabel, hint: modelHint) {
-                prompt = "/model"
+                forceModelMenu = true // 打开模型菜单，不动输入框
                 focusToken += 1
             }
-            ControlChip(text: session.reasoningEffort.label, hint: "⌃T 切换推理强度", action: cycleReasoning)
+            ControlChip(
+                text: session.reasoningEffort.label,
+                hint: "点击调推理强度 · ⌃T 循环切换",
+                isActive: session.reasoningEffort == .max,
+                widthAnchors: ReasoningEffort.allCases.map(\.label)
+            ) {
+                showingEffortSlider = true
+            }
+            .popover(isPresented: $showingEffortSlider, arrowEdge: .top) {
+                EffortSliderWebView(effort: $session.reasoningEffort)
+                    .frame(width: 292, height: 104)
+            }
             if let workspace {
                 ControlChip(
                     text: workspace.multiAgentMode ? "广播" : "单聊",
@@ -726,7 +760,9 @@ struct ComposerView: View {
     private func applyModel(_ model: String) {
         session.setSelectedModel(model)
         RecentModels.record(model, forAgent: session.agent.id)
-        prompt = ""
+        forceModelMenu = false
+        // 仅清掉「/model」斜杠触发的文本；模型芯片打开时输入框是用户草稿，保留不动。
+        if prompt.hasPrefix("/model") { prompt = "" }
     }
 
 }
@@ -737,21 +773,29 @@ private struct ControlChip: View {
     let hint: String
     var isActive: Bool = false
     var isDisabled: Bool = false
+    /// 预留宽度的候选文字：芯片按其中最宽者定宽，使文字切换（如 effort 的 Low/Medium/X-High）
+    /// 不改变芯片宽度——避免挤压相邻控件、并让锚在芯片中心的 popover 不左右漂移。随字号自适应。
+    var widthAnchors: [String] = []
     let action: () -> Void
     @State private var hovering = false
 
     var body: some View {
         Button(action: action) {
-            Text(text)
-                .appFont(relative: -1)
-                .foregroundStyle(isActive ? Theme.accentStrong : .primary)
-                .lineLimit(1)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 4)
-                .background(
-                    Capsule().fill(isActive ? Theme.accentSoft : (hovering ? Theme.controlHover : Color.clear))
-                )
-                .contentShape(Capsule())
+            ZStack {
+                ForEach(widthAnchors, id: \.self) { anchor in
+                    Text(anchor).appFont(relative: -1).lineLimit(1).hidden()
+                }
+                Text(text)
+                    .appFont(relative: -1)
+                    .foregroundStyle(isActive ? Theme.accentStrong : .primary)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+            .background(
+                Capsule().fill(isActive ? Theme.accentSoft : (hovering ? Theme.controlHover : Color.clear))
+            )
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .disabled(isDisabled)

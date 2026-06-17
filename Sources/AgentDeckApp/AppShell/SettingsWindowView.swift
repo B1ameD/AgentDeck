@@ -385,6 +385,31 @@ struct SettingsWindowView: View {
             Divider().padding(.vertical, 2)
 
             currentSessionDefaults
+
+            Divider().padding(.vertical, 2)
+
+            historyManagementSection
+        }
+    }
+
+    private var historyManagementSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("历史记录").font(headlineFont)
+            Text("关闭标签后会话 JSON 默认保留，可在「最近」中找回。如需彻底清理，点击下方按钮。当前已打开的标签不受影响。")
+                .font(captionFont).foregroundStyle(.secondary)
+            Button("清理所有历史记录…", role: .destructive) { confirmClearHistory() }
+        }
+    }
+
+    private func confirmClearHistory() {
+        let alert = NSAlert()
+        alert.messageText = "清理所有历史记录"
+        alert.informativeText = "将删除所有已关闭标签的会话 JSON 文件，操作不可撤销。当前打开的标签不受影响。"
+        alert.addButton(withTitle: "清理")
+        alert.addButton(withTitle: "取消")
+        alert.alertStyle = .warning
+        if alert.runModal() == .alertFirstButtonReturn {
+            workspace.clearAllHistory()
         }
     }
 

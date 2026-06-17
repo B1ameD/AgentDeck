@@ -110,6 +110,8 @@ public enum CLIInvocationBuilder {
         }
 
         // 附件：claude 的 --file 指远端 file 资源而非本地路径，故以 @路径 形式并入 prompt。
+        // prompt 以 `--` 隔开防止被 CLI 解析为 flag（#20）。
+        args += ["--"]
         return place(prompt: promptWithAttachments(prompt, attachments), into: agent, args: args)
     }
 

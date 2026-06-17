@@ -82,6 +82,9 @@ public final class AgentSession: Identifiable {
     public var reasoningEffort: ReasoningEffort
     public var interactionMode: InteractionMode
     public var command: AgentCommand
+    /// 输入框草稿：随键入实时存到本会话，使切标签 / 调 effort / 视图重建等操作不丢失未发送内容。
+    /// 仅内存态（不进快照、不落盘），App 重启后清空即可。
+    public var draft: String = ""
     /// 用户自定义标签名（双击标签 / 右键「改名」设置）；为空时回落到首条消息摘要 / agent 名。
     public var customTitle: String?
     /// 标签是否置顶（左栏排序时置顶项在前）。

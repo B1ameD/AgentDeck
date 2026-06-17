@@ -293,7 +293,7 @@ final class AgentSessionTests: XCTestCase {
 
         let calls = await runner.calls()
         XCTAssertEqual(calls.first?.args, [
-            "-p", "--permission-mode", "bypassPermissions", "first"
+            "-p", "--permission-mode", "bypassPermissions", "--", "first"
         ])
         XCTAssertEqual(calls[1].args.first, "-p")
         XCTAssertFalse(calls[1].args.contains("--session-id"))
@@ -328,7 +328,7 @@ final class AgentSessionTests: XCTestCase {
         XCTAssertEqual(calls.count, 2)
         XCTAssertEqual(calls[0].args, [
             "-p", "--output-format", "stream-json", "--verbose",
-            "--permission-mode", "bypassPermissions", "first"
+            "--permission-mode", "bypassPermissions", "--", "first"
         ])
         XCTAssertEqual(calls[1].args, [
             "-p",
@@ -339,6 +339,7 @@ final class AgentSessionTests: XCTestCase {
             "bypassPermissions",
             "--resume",
             "claude-session-abc",
+            "--",
             "second"
         ])
         XCTAssertFalse(calls[1].args.contains("--session-id"))
@@ -446,12 +447,12 @@ final class AgentSessionTests: XCTestCase {
         guard calls.count == 3 else { return }
         XCTAssertEqual(calls[0].args, [
             "-p", "--output-format", "stream-json", "--verbose",
-            "--permission-mode", "bypassPermissions", "first"
+            "--permission-mode", "bypassPermissions", "--", "first"
         ])
         XCTAssertEqual(calls[1].args, [
             "-p", "--output-format", "stream-json", "--verbose",
             "--permission-mode", "bypassPermissions",
-            "--resume", "stale-claude-session", "second"
+            "--resume", "stale-claude-session", "--", "second"
         ])
         XCTAssertFalse(calls[2].args.contains("--resume"))
         let fallbackPrompt = calls[2].args.last ?? ""

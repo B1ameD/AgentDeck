@@ -182,7 +182,11 @@ public struct AgentConfig: Codable, Equatable, Identifiable, Sendable {
             return env
         }
         var runtime = env
-        runtime["OPENCODE_CONFIG_CONTENT"] = #"{"snapshot":false}"#
+        // snapshot:false 关闭快照；permission 在配置层预先放行工具(edit/bash/webfetch)实现非交互自治
+        // ——否则 serve 模式默认对工具「ask」→ 触发 permission.asked，运行卡在等授权(#opencode 挂起)。
+        // question/plan_enter/plan_exit 仍 deny(避免交互式挂起)。等同 claude bypassPermissions / codex bypass。
+        runtime["OPENCODE_CONFIG_CONTENT"] =
+            #"{"snapshot":false,"permission":{"edit":"allow","bash":"allow","webfetch":"allow","question":"deny","plan_enter":"deny","plan_exit":"deny"}}"#
         return runtime
     }
 }

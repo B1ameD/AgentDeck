@@ -89,4 +89,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
 </plist>
 PLIST
 
-echo "Created $APP_ROOT"
+# Ad-hoc 签名：让 Gatekeeper 允许本机直接运行；分发给他人仍需 xattr -cr 或开发者证书。
+codesign --force --deep --sign - "$APP_ROOT"
+
+echo "Created $APP_ROOT (ad-hoc signed)"

@@ -453,6 +453,18 @@ public final class WorkspaceController {
         refreshRecents()
     }
 
+    /// 清理所有历史记录：删除全部落盘会话 JSON（当前打开的标签保留，不受影响）。
+    public func clearAllHistory() {
+        let activeIDs = Set(sessions.map { $0.id.uuidString })
+        let all = conversationStore.summaries()
+        for summary in all where !activeIDs.contains(summary.id) {
+            conversationStore.delete(id: summary.id)
+            dismissedRecentIDs.remove(summary.id)
+        }
+        persist()
+        refreshRecents()
+    }
+
     /// 全部落盘会话（按更新时间倒序），映射成命中项——供历史检索在「无查询」时默认全部展示。
     public func allConversationHits() -> [ConversationHit] {
         conversationStore.all().map { convo in
@@ -467,6 +479,13 @@ public final class WorkspaceController {
                 updatedAt: convo.updatedAt
             )
         }
+    }
+
+    /// 当前工作区目录下的会话摘要（用于历史搜索工作区过滤）。
+    public func conversationSummaries(inDirectory path: String) -> [ConversationSummary] {
+        conversationStore.all()
+            .filter { $0.workingDirectory == path }
+            .map { ConversationSummary(id: $0.id, title: $0.title, agentName: $0.agentName, updatedAt: $0.updatedAt) }
     }
 
     // MARK: - 标签管理（改名 / 置顶 / 删除）

@@ -173,7 +173,7 @@ final class OpenCodeStreamingTests: XCTestCase {
         // opencode 的 question.asked：转成 question 事件交上层渲染卡片；不结束、不拒绝（run 保持运行等回答）。
         let result = t.translate(questionAsked(requestID: "que_1"))
         XCTAssertFalse(result.finished)
-        XCTAssertNil(result.rejectPermissionID)
+        XCTAssertNil(result.grantPermissionID)
         let line = result.lines.first.flatMap { OpenCodeStreamWire.parseSSELine($0) }
         XCTAssertEqual(line?["type"] as? String, "question")
         XCTAssertEqual(line?["requestID"] as? String, "que_1")
@@ -250,10 +250,11 @@ final class OpenCodeStreamingTests: XCTestCase {
         XCTAssertTrue(other.lines.isEmpty)
     }
 
-    func testPermissionAskedRequestsReject() {
+    func testPermissionAskedAutoGrants() {
         var t = OpenCodeEventTranslator(sessionID: "s", thinking: true)
+        // 非交互自治：工具权限请求自动放行（避免旧版自动拒绝导致运行中断）。
         let asked = t.translate(["type": "permission.asked", "properties": ["sessionID": "s", "id": "perm_1"]])
-        XCTAssertEqual(asked.rejectPermissionID, "perm_1")
+        XCTAssertEqual(asked.grantPermissionID, "perm_1")
     }
 
     // MARK: - AgentSession 集成（注入假流式通道）

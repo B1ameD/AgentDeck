@@ -9,6 +9,7 @@ struct HistorySearchView: View {
     @State private var hits: [ConversationHit] = []
     @State private var selected: StoredConversation?
     @State private var restoreError: String?
+    @State private var filterCurrentWorkspace = false
 
     private var trimmedQuery: String {
         query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -22,6 +23,10 @@ struct HistorySearchView: View {
                     .textFieldStyle(.plain)
                     .onChange(of: query) { _, _ in refresh() }
                 Spacer()
+                Toggle("仅当前工作区", isOn: $filterCurrentWorkspace)
+                    .toggleStyle(.checkbox)
+                    .appFont(relative: -2)
+                    .onChange(of: filterCurrentWorkspace) { _, _ in refresh() }
                 Text("\(hits.count) 条").appFont(relative: -2).foregroundStyle(.secondary)
                 Button("关闭") { dismiss() }
                     .keyboardShortcut(.cancelAction)
@@ -39,11 +44,19 @@ struct HistorySearchView: View {
         .onAppear(perform: refresh)
     }
 
-    /// 无查询时展示全部历史会话；有查询时全文搜索。
+    /// 无查询时展示全部历史会话；有查询时全文搜索；可选只看当前工作区。
     private func refresh() {
-        hits = trimmedQuery.isEmpty
+        var results = trimmedQuery.isEmpty
             ? workspace.allConversationHits()
             : workspace.searchConversations(query)
+        if filterCurrentWorkspace {
+            let currentPath = workspace.workspaceDirectory.path
+            let idsInWorkspace = Set(
+                workspace.conversationSummaries(inDirectory: currentPath).map(\.id)
+            )
+            results = results.filter { idsInWorkspace.contains($0.id) }
+        }
+        hits = results
     }
 
     private var results: some View {

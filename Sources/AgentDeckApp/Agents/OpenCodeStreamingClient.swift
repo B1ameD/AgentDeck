@@ -149,9 +149,12 @@ public final class OpenCodeStreamingClient: OpenCodeStreaming, @unchecked Sendab
                         for line in translation.lines {
                             continuation.yield(.stdout(line + "\n"))
                         }
-                        if let permissionID = translation.rejectPermissionID {
-                            // 与 `opencode run` 一致：非交互模式自动拒绝权限请求，避免挂起。
-                            await rejectPermission(
+                        if let permissionID = translation.grantPermissionID {
+                            // 非交互自治模式：自动放行工具权限（bash/edit/webfetch 等），等同 claude 的
+                            // bypassPermissions / codex 的 bypass。否则 serve 模式下默认「ask」会触发
+                            // permission.asked，旧版自动拒绝 → 工具失败 → 运行莫名其妙中断。
+                            // question/plan_enter/plan_exit 已在 sessionCreateBody 预 deny，不会走到这里。
+                            await grantPermission(
                                 base: base, sessionID: sessionID,
                                 permissionID: permissionID, directory: request.workingDirectory
                             )
@@ -260,10 +263,13 @@ public final class OpenCodeStreamingClient: OpenCodeStreaming, @unchecked Sendab
         }
     }
 
-    private func rejectPermission(base: URL, sessionID: String, permissionID: String, directory: URL) async {
+    private func grantPermission(base: URL, sessionID: String, permissionID: String, directory: URL) async {
+        // 兜底：工具权限已在 OPENCODE_CONFIG_CONTENT 配置层预放行，正常不会走到这里。万一仍有权限请求，
+        // 用 "once"(单次放行，无需 pattern)而非 "always"——后者在本机实测会让运行卡住等授权不返回。
+        // opencode 权限响应枚举为 ["once","always","reject"]。
         let request = makeRequest(
             base.appendingPathComponent("session/\(sessionID)/permissions/\(permissionID)"),
-            method: "POST", directory: directory, body: ["response": "reject"], timeout: 10
+            method: "POST", directory: directory, body: ["response": "once"], timeout: 10
         )
         _ = try? await session.data(for: request)
     }
@@ -530,7 +536,7 @@ struct OpenCodeEventTranslator {
         case "permission.asked", "permission.updated":
             guard properties["sessionID"] as? String == sessionID else { return OpenCodeEventTranslation() }
             var translation = OpenCodeEventTranslation()
-            translation.rejectPermissionID = properties["id"] as? String
+            translation.grantPermissionID = properties["id"] as? String
             return translation
 
         case "question.asked":
@@ -636,11 +642,11 @@ struct OpenCodeEventTranslator {
     }
 }
 
-/// 翻译结果：要发给上层的 JSON 行、是否本会话已 idle（结束）、需 best-effort 拒绝的权限 id。
+/// 翻译结果：要发给上层的 JSON 行、是否本会话已 idle（结束）、需 best-effort 自动放行的权限 id。
 struct OpenCodeEventTranslation {
     var lines: [String] = []
     var finished = false
-    var rejectPermissionID: String?
+    var grantPermissionID: String?
 }
 
 /// 按 part 维度记录「已发出的文本」，把服务端的**累计**文本转成**增量**（delta）。
