@@ -154,6 +154,21 @@ public var transport: Transport = .cli
 - codex-acp(Codex 适配器,Rust):https://github.com/cola-io/codex-acp
 - acpx(headless ACP 客户端/多路复用,Node):https://github.com/openclaw/acpx
 
+## 10.5 ACP-first 内置预设（2026-06-17，ACP 替代默认接入）
+
+`AgentRegistry.builtInPresets` 已从「逐家 CLI」改为「ACP-first」：检测到基础 agent 安装即生成其 ACP 预设，
+全部 `transport: acp`：
+- `codex` → `npx -y @agentclientprotocol/codex-acp`（沿用 id `codex`，kind/品牌图标延续）
+- `opencode` → `npx -y opencode-ai acp`（沿用 id `opencode`）
+- `gemini` → `gemini --acp`（id `gemini-acp`）
+- `cursor-agent` → `cursor-agent acp`（id `cursor-acp`）
+
+codex/opencode/gemini/cursor 的 ACP 适配器用各自**原生登录**，开箱即用。**claude 不做内置**——claude-agent-acp
+借不到宿主 OAuth、需显式 base_url/token，由用户 `claude-acp.json` 提供（见 §11）。`runtimeEnvironment` 对
+`transport==.acp` 一律只返回 `env`、不注入 CLI 专属环境（claude settings / OPENCODE_CONFIG_CONTENT），
+避免与 ACP 协议冲突。CLI 引擎代码（CLIInvocationBuilder / OutputParser / OpenCodeStreamingClient）保留，
+作为 `transport: cli` 自定义 agent 的支撑与回退，不再是默认接入。
+
 ## 11. 如何声明一个 ACP agent
 
 在自定义 agent 目录 `~/Library/Application Support/AgentDeck/Agents/` 放一个 JSON，把 `transport` 设为 `"acp"`，`command`/`args` 指向 ACP 适配器可执行。重载（设置页「重新加载」或重启）后即出现在「+」菜单。

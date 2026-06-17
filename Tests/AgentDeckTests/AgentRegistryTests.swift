@@ -70,25 +70,21 @@ final class AgentRegistryTests: XCTestCase {
         XCTAssertNil(resolved)
     }
 
-    func testBuiltInPresetsContainExpectedAgents() {
+    func testBuiltInPresetsAreACPAgents() {
         let presets = AgentRegistry.builtInPresets(executableResolver: { name in "/usr/local/bin/\(name)" })
 
-        XCTAssertEqual(presets.map(\.id), ["claude-code", "codex", "opencode", "pi-local"])
-        XCTAssertEqual(presets.first?.command, "/usr/local/bin/claude")
-        XCTAssertEqual(
-            presets.first(where: { $0.id == "claude-code" })?.args,
-            ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages"]
-        )
-        XCTAssertEqual(presets.first(where: { $0.id == "claude-code" })?.inputMode, .oneShotArgument)
-        XCTAssertEqual(presets.first(where: { $0.id == "claude-code" })?.outputMode, .jsonLines)
-        XCTAssertEqual(presets.first(where: { $0.id == "codex" })?.args, ["exec"])
-        XCTAssertEqual(presets.first(where: { $0.id == "codex" })?.inputMode, .oneShotArgument)
-        XCTAssertEqual(presets.first(where: { $0.id == "codex" })?.outputMode, .jsonLines)
-        XCTAssertEqual(presets.first(where: { $0.id == "opencode" })?.args, ["run"])
-        XCTAssertEqual(presets.first(where: { $0.id == "opencode" })?.inputMode, .oneShotArgument)
-        XCTAssertEqual(presets.first(where: { $0.id == "opencode" })?.outputMode, .jsonLines)
-        XCTAssertEqual(presets.first(where: { $0.id == "pi-local" })?.args, ["chat", "--stdio"])
-        XCTAssertEqual(presets.first(where: { $0.id == "pi-local" })?.inputMode, .stdin)
+        // ACP-first：内置 agent 全部走 ACP；claude 不在内置（需自定义 claude-acp.json 配鉴权）。
+        XCTAssertEqual(presets.map(\.id), ["codex", "opencode", "gemini-acp", "cursor-acp"])
+        XCTAssertTrue(presets.allSatisfy { $0.resolvedTransport == .acp })
+        XCTAssertFalse(presets.contains { $0.id == "claude-code" })
+        // codex → codex-acp 适配器经 npx 启动
+        let codex = presets.first { $0.id == "codex" }
+        XCTAssertEqual(codex?.command, "/usr/local/bin/npx")
+        XCTAssertEqual(codex?.args, ["-y", "@agentclientprotocol/codex-acp"])
+        // opencode → opencode-ai acp
+        XCTAssertEqual(presets.first { $0.id == "opencode" }?.args, ["-y", "opencode-ai", "acp"])
+        // gemini → 原生 --acp
+        XCTAssertEqual(presets.first { $0.id == "gemini-acp" }?.args, ["--acp"])
     }
 
     func testBuiltInPresetsSkipMissingExecutables() {
@@ -141,9 +137,10 @@ final class AgentRegistryTests: XCTestCase {
             executableResolver: { name in name == "codex" ? "/opt/homebrew/bin/codex" : nil }
         )
 
-        // 内置 codex 保留，自定义同 id 被跳过，codex 只出现一次。
+        // 内置 codex 保留，自定义同 id 被跳过，codex 只出现一次。内置已是 ACP（经 npx 启动适配器）。
         XCTAssertEqual(registry.agents.map(\.id), ["codex"])
-        XCTAssertEqual(registry.agents.first?.command, "/opt/homebrew/bin/codex")
+        XCTAssertEqual(registry.agents.first?.command, "npx")
+        XCTAssertEqual(registry.agents.first?.resolvedTransport, .acp)
         XCTAssertEqual(registry.warnings.count, 1)
         XCTAssertTrue(registry.warnings[0].contains("codex.json"))
         XCTAssertTrue(registry.warnings[0].contains("codex"))

@@ -25,46 +25,34 @@ public struct AgentRegistry: Equatable {
         return AgentRegistry(agents: builtIns + custom.agents, warnings: custom.warnings)
     }
 
+    /// ACP-first：内置 agent 统一走 ACP 适配器（替代原 CLI 接入）。检测到「基础 agent」安装即生成其 ACP 预设。
+    /// - codex/opencode/gemini/cursor 的 ACP 适配器用各自原生登录，开箱即用、无需配 token。
+    /// - claude 不在此列：claude-agent-acp 借不到 Claude Code 宿主 OAuth、需显式鉴权（base_url/token），
+    ///   由用户自定义 `claude-acp.json` 提供（见 docs/ACP_INTEGRATION_PLAN.md §11）。
+    /// codex/opencode 沿用原 id（延续 kind 推导与品牌图标），仅把 transport 切到 ACP、命令换成适配器。
     public static func builtInPresets(executableResolver: (String) -> String?) -> [AgentConfig] {
-        let candidates: [
-            (
-                id: String,
-                name: String,
-                executable: String,
-                args: [String],
-                inputMode: AgentConfig.InputMode,
-                outputMode: AgentConfig.OutputMode
-            )
-        ] = [
-            (
-                "claude-code",
-                "Claude Code",
-                "claude",
-                ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages"],
-                .oneShotArgument,
-                .jsonLines
-            ),
-            ("codex", "Codex", "codex", ["exec"], .oneShotArgument, .jsonLines),
-            ("opencode", "OpenCode", "opencode", ["run"], .oneShotArgument, .jsonLines),
-            ("pi-local", "Pi", "pi", ["chat", "--stdio"], .stdin, .stream)
+        let npx = executableResolver("npx") ?? "npx"
+        let candidates: [(base: String, id: String, name: String, command: String, args: [String])] = [
+            ("codex", "codex", "Codex", npx, ["-y", "@agentclientprotocol/codex-acp"]),
+            ("opencode", "opencode", "OpenCode", npx, ["-y", "opencode-ai", "acp"]),
+            ("gemini", "gemini-acp", "Gemini", executableResolver("gemini") ?? "gemini", ["--acp"]),
+            ("cursor-agent", "cursor-acp", "Cursor", executableResolver("cursor-agent") ?? "cursor-agent", ["acp"])
         ]
 
         return candidates.compactMap { candidate in
-            guard let command = executableResolver(candidate.executable) else {
-                return nil
-            }
-
+            guard executableResolver(candidate.base) != nil else { return nil }
             return AgentConfig(
                 id: candidate.id,
                 name: candidate.name,
-                command: command,
+                command: candidate.command,
                 args: candidate.args,
                 env: [:],
                 workingDirectoryPolicy: .workspace,
-                inputMode: candidate.inputMode,
-                outputMode: candidate.outputMode,
+                inputMode: .oneShotArgument,
+                outputMode: .stream,
                 supportsStop: true,
-                stopSignal: .interrupt
+                stopSignal: .interrupt,
+                transport: .acp
             )
         }
     }

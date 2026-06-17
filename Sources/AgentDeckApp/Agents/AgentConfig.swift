@@ -178,6 +178,9 @@ public struct AgentConfig: Codable, Equatable, Identifiable, Sendable {
     }
 
     public func runtimeEnvironment(claudeSettingsURL: URL = ClaudeSettings.defaultSettingsURL) -> [String: String] {
+        // ACP 适配器自管运行时（鉴权/模型/配置在适配器侧或 agent.env），不注入 CLI 专属环境
+        // （如 claude 的 settings 环境、opencode 的 OPENCODE_CONFIG_CONTENT）——避免与 ACP 协议/适配器冲突。
+        if resolvedTransport == .acp { return env }
         switch kind {
         case .claudeCode:
             return ClaudeSettings.loadEnvironment(settingsURL: claudeSettingsURL)
