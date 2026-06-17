@@ -184,6 +184,23 @@ public var transport: Transport = .cli
 
 要点：
 - ACP 路径不使用 `inputMode`/`outputMode`（它们只对 CLI 传输有意义），但 schema 必填，填占位即可。
-- `env` 为空时适配器子进程继承 App 进程环境（含 `ANTHROPIC_MODEL` 等）；需要覆盖模型/密钥时在此填。
-- 模型选择：Claude 适配器走 `ANTHROPIC_MODEL` 环境变量（不自报 configOptions）；codex-acp 等自报 `configOptions` 的适配器，其模型/effort 经 `session/set_config_option` 切换（picker UI 待接入）。
+- `env` 为空时适配器子进程继承 App 进程环境；需要覆盖模型/密钥/base_url 时在此填。
 - PATH 已自动按登录 shell 增强（`ShellEnvironment`），GUI 启动也能找到 `npx`/`node`。
+
+### 鉴权坑（claude-agent-acp，实测踩过）
+
+1. **借不到 Claude Code 宿主 OAuth**：claude-agent-acp 在 Claude Code 宿主里跑能直接用宿主的 OAuth（initialize 的 `authMethods: []`）；但 AgentDeck 经 `open` 从 launchd 启动，拿不到那套 OAuth 环境变量 → 运行时 **403 Request not allowed**。所以**必须给适配器自己的凭证**（API key 或中转 token），不能指望它白嫖宿主登录。
+2. **第三方中转**：填中转的 `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`（如小米 mimo：`https://token-plan-cn.xiaomimimo.com/anthropic`）。base_url 与 token 必须配对——base_url 设成官方而 token 是中转的会 403。
+3. **模型来源 = `~/.claude/settings.json` 的 `model`，不是 `ANTHROPIC_MODEL`**：claude-agent-acp 读全局 settings.json 的 `model` 字段且**优先于 `ANTHROPIC_MODEL` 环境变量**。若该字段是给宿主用的官方模型（如 `claude-opus-4-8`），发到中转会 **400 Param Incorrect**（中转没这模型）。解法：给 ACP agent 设独立 **`CLAUDE_CONFIG_DIR`**，里面放一份只含中转模型的 `settings.json`（如 `{"model":"mimo-v2.5-pro"}`），与宿主配置隔离。
+4. **自检脚本**：`python3 Scripts/acp_check.py` 读 `claude-acp.json` 的 env，在极简环境（模拟 GUI launchd）里实测 initialize→prompt，输出 `✓ 打通` / `✗ 失败`（不打印 token），改完配置先跑它再重启 app。
+
+完整可用配置示例（中转）：
+```json
+"env": {
+  "ANTHROPIC_BASE_URL": "https://token-plan-cn.xiaomimimo.com/anthropic",
+  "ANTHROPIC_AUTH_TOKEN": "<你的 tp- token>",
+  "ANTHROPIC_MODEL": "mimo-v2.5-pro",
+  "CLAUDE_CONFIG_DIR": "/Users/<你>/Library/Application Support/AgentDeck/acp-claude-config"
+}
+```
+（`acp-claude-config/settings.json` 内容：`{"model": "mimo-v2.5-pro"}`）
