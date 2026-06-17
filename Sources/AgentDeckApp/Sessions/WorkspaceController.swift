@@ -398,6 +398,8 @@ public final class WorkspaceController {
     }
 
     public func closeSession(id: AgentSession.ID) {
+        // 运行中拒绝关闭：误关后重开会丢失正在进行的运行。任何路径（UI / 快捷键）都拦在这里兜底。
+        if let session = sessions.first(where: { $0.id == id }), session.isRunning { return }
         sessions.removeAll { $0.id == id }
         if focusedSessionID == id {
             focusedSessionID = sessions.first?.id
@@ -445,6 +447,8 @@ public final class WorkspaceController {
 
     /// 彻底删除一条会话记录（删转录文件 + 从最近隐藏；若它当前是打开的标签则一并关闭）。
     public func deleteConversation(id: String) {
+        // 运行中的标签拒绝删除，避免丢失正在进行的运行。
+        if let session = sessions.first(where: { $0.id.uuidString == id }), session.isRunning { return }
         sessions.removeAll { $0.id.uuidString == id }
         if focusedSessionID?.uuidString == id { focusedSessionID = sessions.first?.id }
         conversationStore.delete(id: id)

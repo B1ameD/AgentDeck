@@ -70,7 +70,14 @@ struct AgentTabRow: View {
                         .foregroundStyle(Theme.accentStrong)
                         .help("已置顶")
                 }
-                if hovering || isSelected {
+                if session.isRunning {
+                    // 运行中不可关闭：误关后重开会丢失正在进行的运行（#防误关）。显示旋转指示替代关闭按钮。
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.7)
+                        .frame(width: 14, height: 14)
+                        .help("运行中，无法关闭——请先等待完成或停止运行")
+                } else if hovering || isSelected {
                     Button(action: onClose) {
                         Image(systemName: "xmark").appFont(relative: -3, weight: .bold)
                     }
@@ -118,8 +125,10 @@ struct AgentTabRow: View {
             Button("在 Finder 中打开工作区", action: onRevealWorkspace)
             Button("复制工作区路径", action: onCopyWorkspacePath)
             Divider()
-            Button("关闭标签", action: onClose)
+            Button(session.isRunning ? "运行中，无法关闭" : "关闭标签", action: onClose)
+                .disabled(session.isRunning)
             Button("删除会话记录", role: .destructive, action: onDelete)
+                .disabled(session.isRunning)
         }
     }
 
