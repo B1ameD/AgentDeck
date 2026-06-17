@@ -703,6 +703,9 @@ public final class AgentSession: Identifiable {
     private func consumeACP(prompt: String, attachments: [URL]) async -> AgentRunOutcome {
         var assistantIndex: Int?
         var producedMessage = false
+        // 答案正文累计（不含思考块）：claude-agent-acp 在增量 chunk 后会再补一条「完整全文」chunk，
+        // 与已累计全文相同则跳过，避免答案重复一遍（实测 mimo 后端）。
+        var answerText = ""
         do {
             let transport = try await ensureACPSession()
             guard let sessionID = acpSessionID else {
@@ -722,6 +725,11 @@ public final class AgentSession: Identifiable {
                     if let turn = translation.usage { recordTurnUsage(turn) }
                     if let modeID = translation.currentModeId { acpCurrentModeID = modeID }
                     for parsed in translation.events {
+                        // 思考块（<think>…）以外的答案正文做去重：末尾的完整快照 chunk == 已累计全文 → 跳过。
+                        if parsed.kind == .message, !parsed.text.hasPrefix("<think>") {
+                            if parsed.text == answerText { continue }
+                            answerText += parsed.text
+                        }
                         apply(parsed, assistantIndex: &assistantIndex, producedMessage: &producedMessage)
                     }
                 case .completed:

@@ -59,6 +59,26 @@ final class ACPSessionTests: XCTestCase {
         XCTAssertEqual(transport.lastPromptText, "hi")
     }
 
+    func testACPDeduplicatesFinalFullTextSnapshot() async {
+        // claude-agent-acp 模式：增量 chunk 后再补一条完整全文 → 不能重复追加。
+        let transport = FakeACPTransport(scripted: [
+            .update(update("agent_message_chunk", extra: ["content": .object(["type": .string("text"), "text": .string("你好！有什么我可以")])])),
+            .update(update("agent_message_chunk", extra: ["content": .object(["type": .string("text"), "text": .string("帮你的吗？")])])),
+            .update(update("agent_message_chunk", extra: ["content": .object(["type": .string("text"), "text": .string("你好！有什么我可以帮你的吗？")])])),
+            .completed(stopReason: "end_turn")
+        ])
+        let session = AgentSession(
+            agent: acpAgent(),
+            workingDirectory: FileManager.default.temporaryDirectory,
+            permissionDecider: { _ in .allow },
+            acpTransport: transport
+        )
+
+        await session.send("hi")
+
+        XCTAssertEqual(session.messages.last?.text, "你好！有什么我可以帮你的吗？", "末尾完整快照应被去重，不重复一遍")
+    }
+
     func testACPReusesSessionAcrossTurns() async {
         let transport = FakeACPTransport(scripted: [
             .update(update("agent_message_chunk", extra: ["content": .object(["type": .string("text"), "text": .string("ok")])])),
