@@ -38,6 +38,8 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
     /// 广播轮次标记（#27 对比视图）：同一次广播在各会话的用户消息共享同一 id，
     /// 据此把「同一问题」的各家回答对齐。仅用户消息打标；非广播消息为 nil。
     public var broadcastID: String?
+    /// 随该消息发送的附件本地路径（用户消息）。用于在对话区显示附件 chips/缩略图。
+    public var attachments: [String]
 
     public init(
         id: UUID = UUID(),
@@ -53,7 +55,8 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
         subagentTasks: [SubagentTask] = [],
         runStartedAt: Date? = nil,
         runEndedAt: Date? = nil,
-        broadcastID: String? = nil
+        broadcastID: String? = nil,
+        attachments: [String] = []
     ) {
         self.id = id
         self.role = role
@@ -69,6 +72,7 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
         self.runStartedAt = runStartedAt
         self.runEndedAt = runEndedAt
         self.broadcastID = broadcastID
+        self.attachments = attachments
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -86,6 +90,7 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
         case runStartedAt
         case runEndedAt
         case broadcastID
+        case attachments
     }
 
     public init(from decoder: Decoder) throws {
@@ -104,6 +109,7 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
         runStartedAt = try container.decodeIfPresent(Date.self, forKey: .runStartedAt)
         runEndedAt = try container.decodeIfPresent(Date.self, forKey: .runEndedAt)
         broadcastID = try container.decodeIfPresent(String.self, forKey: .broadcastID)
+        attachments = try container.decodeIfPresent([String].self, forKey: .attachments) ?? []
     }
 }
 

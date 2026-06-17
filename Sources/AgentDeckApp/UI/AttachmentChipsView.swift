@@ -43,14 +43,15 @@ enum AttachmentInfo {
 /// 普通聊天与广播 composer 共用同一组件，保证两边附件预览/移除行为一致。
 struct AttachmentChipsView: View {
     let attachments: [URL]
-    let onRemove: (URL) -> Void
+    /// nil＝只读展示（不显示移除按钮，用于已发送消息气泡里的附件）。
+    var onRemove: ((URL) -> Void)?
     var onOpen: ((URL) -> Void)?
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 ForEach(attachments, id: \.self) { url in
-                    AttachmentChip(url: url, onRemove: { onRemove(url) }, onOpen: onOpen)
+                    AttachmentChip(url: url, onRemove: onRemove.map { remove in { remove(url) } }, onOpen: onOpen)
                 }
             }
             .padding(.horizontal, 2)
@@ -62,7 +63,7 @@ struct AttachmentChipsView: View {
 
 private struct AttachmentChip: View {
     let url: URL
-    let onRemove: () -> Void
+    var onRemove: (() -> Void)?
     var onOpen: ((URL) -> Void)?
 
     @State private var thumbnail: NSImage?
@@ -85,13 +86,15 @@ private struct AttachmentChip: View {
             }
             .frame(maxWidth: 120, alignment: .leading)
 
-            Button(action: onRemove) {
-                Image(systemName: "xmark.circle.fill")
-                    .appFont(relative: -1)
-                    .foregroundStyle(hovering ? Color.red.opacity(0.9) : Color.secondary.opacity(0.7))
+            if let onRemove {
+                Button(action: onRemove) {
+                    Image(systemName: "xmark.circle.fill")
+                        .appFont(relative: -1)
+                        .foregroundStyle(hovering ? Color.red.opacity(0.9) : Color.secondary.opacity(0.7))
+                }
+                .buttonStyle(.plain)
+                .help("移除该附件")
             }
-            .buttonStyle(.plain)
-            .help("移除该附件")
         }
         .padding(.leading, 6)
         .padding(.trailing, 7)

@@ -461,7 +461,7 @@ public final class AgentSession: Identifiable {
         let invocationPrompt = promptForInvocation(prompt, continuity: continuity)
         // 先显示用户消息 + 进入运行态（思考指示器即时出现），再捕获运行前基线快照——
         // 快照仍在 agent 真正执行之前完成，但不再让它阻塞「用户消息上屏」。
-        messages.append(ChatMessage(role: .user, text: prompt, broadcastID: broadcastID))
+        messages.append(ChatMessage(role: .user, text: prompt, broadcastID: broadcastID, attachments: attachments.map(\.path)))
         activeRunStartedAt = Date()
         activeRunAssistantIDs = []
         status = .running
@@ -550,7 +550,7 @@ public final class AgentSession: Identifiable {
     // MARK: - ACP 路径（阶段 1：聊天 / 流式 / 取消）
 
     private func performSendACP(prompt: String, attachments: [URL], broadcastID: String?) async {
-        messages.append(ChatMessage(role: .user, text: prompt, broadcastID: broadcastID))
+        messages.append(ChatMessage(role: .user, text: prompt, broadcastID: broadcastID, attachments: attachments.map(\.path)))
         activeRunStartedAt = Date()
         activeRunAssistantIDs = []
         status = .running
@@ -680,6 +680,19 @@ public final class AgentSession: Identifiable {
         path.hasPrefix("/") ? URL(fileURLWithPath: path) : cwd.appendingPathComponent(path)
     }
 
+    private enum ACPChunkKind { case answer, thought, other }
+
+    /// 判断一条已翻译事件属于答案正文 / 思考块 / 其它（工具/状态等），用于分组去重。
+    private func acpChunkKind(_ event: OutputEvent) -> ACPChunkKind {
+        guard event.kind == .message else { return .other }
+        return (event.text.hasPrefix("<think>") && event.text.hasSuffix("</think>")) ? .thought : .answer
+    }
+
+    /// 取 `<think>…</think>` 的内层文本（去重比较用）。
+    private static func acpThinkInner(_ text: String) -> String {
+        String(text.dropFirst("<think>".count).dropLast("</think>".count))
+    }
+
     /// 弹出权限卡片并挂起，直到用户点选（返回 optionId）或取消/停止（返回 nil）。
     /// internal（非 private）以便单测直接驱动权限往返。
     func requestACPPermission(toolCall: JSONValue, options: [ACPPermissionOption]) async -> String? {
@@ -706,9 +719,9 @@ public final class AgentSession: Identifiable {
     private func consumeACP(prompt: String, attachments: [URL]) async -> AgentRunOutcome {
         var assistantIndex: Int?
         var producedMessage = false
-        // 答案正文累计（不含思考块）：claude-agent-acp 在增量 chunk 后会再补一条「完整全文」chunk，
-        // 与已累计全文相同则跳过，避免答案重复一遍（实测 mimo 后端）。
+        // 答案/思考各自的本块累计文本，用于跳过适配器补发的「完整全文」快照（去重，见 .update 处理）。
         var answerText = ""
+        var thoughtText = ""
         do {
             let transport = try await ensureACPSession()
             guard let sessionID = acpSessionID else {
@@ -728,10 +741,23 @@ public final class AgentSession: Identifiable {
                     if let turn = translation.usage { recordTurnUsage(turn) }
                     if let modeID = translation.currentModeId { acpCurrentModeID = modeID }
                     for parsed in translation.events {
-                        // 思考块（<think>…）以外的答案正文做去重：末尾的完整快照 chunk == 已累计全文 → 跳过。
-                        if parsed.kind == .message, !parsed.text.hasPrefix("<think>") {
+                        // 去重：答案正文与思考块各自累计；适配器在增量后偶发补一条「完整全文」快照
+                        // （== 已累计全文）→ 跳过，避免重复一遍。工具等其它事件重置两个累计器，
+                        // 使每个推理/答案块独立判定（跨工具的多步推理是真实的，照常保留）。
+                        let kind = acpChunkKind(parsed)
+                        switch kind {
+                        case .answer:
+                            thoughtText = ""
                             if parsed.text == answerText { continue }
                             answerText += parsed.text
+                        case .thought:
+                            answerText = ""
+                            let inner = Self.acpThinkInner(parsed.text)
+                            if inner == thoughtText { continue }
+                            thoughtText += inner
+                        case .other:
+                            answerText = ""
+                            thoughtText = ""
                         }
                         apply(parsed, assistantIndex: &assistantIndex, producedMessage: &producedMessage)
                     }

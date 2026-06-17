@@ -79,6 +79,32 @@ final class ACPSessionTests: XCTestCase {
         XCTAssertEqual(session.messages.last?.text, "你好！有什么我可以帮你的吗？", "末尾完整快照应被去重，不重复一遍")
     }
 
+    func testACPDeduplicatesThoughtFinalSnapshotPerBlock() async {
+        // 思考块增量后补一条完整快照 → 去重；工具调用后的新思考块独立保留（跨工具的多步推理是真实的）。
+        let transport = FakeACPTransport(scripted: [
+            .update(update("agent_thought_chunk", extra: ["content": .object(["type": .string("text"), "text": .string("先读")])])),
+            .update(update("agent_thought_chunk", extra: ["content": .object(["type": .string("text"), "text": .string("文件")])])),
+            .update(update("agent_thought_chunk", extra: ["content": .object(["type": .string("text"), "text": .string("先读文件")])])), // 完整快照
+            .update(update("tool_call", extra: ["title": .string("Read"), "status": .string("completed")])),
+            .update(update("agent_thought_chunk", extra: ["content": .object(["type": .string("text"), "text": .string("先读")])])), // 工具后新块，重置后保留
+            .completed(stopReason: "end_turn")
+        ])
+        let session = AgentSession(
+            agent: acpAgent(),
+            workingDirectory: FileManager.default.temporaryDirectory,
+            permissionDecider: { _ in .allow },
+            acpTransport: transport
+        )
+
+        await session.send("读")
+
+        let text = session.messages.last?.text ?? ""
+        // 思考按 delta 逐个 <think>…</think> 包裹；完整快照「先读文件」若未去重会多出一个 <think>先读文件</think>。
+        XCTAssertFalse(text.contains("<think>先读文件</think>"), "块内完整快照应去重")
+        XCTAssertTrue(text.contains("先读") && text.contains("文件"), "增量思考保留")
+        XCTAssertTrue(text.contains("Read"), "工具调用保留")
+    }
+
     func testACPReusesSessionAcrossTurns() async {
         let transport = FakeACPTransport(scripted: [
             .update(update("agent_message_chunk", extra: ["content": .object(["type": .string("text"), "text": .string("ok")])])),
@@ -329,6 +355,9 @@ final class ACPSessionTests: XCTestCase {
 
         XCTAssertEqual(transport.lastPromptBlockCount, 3) // 1 文本 + 2 resource_link
         XCTAssertEqual(transport.lastPromptText, "看这两个文件")
+        // 附件路径存到用户消息上 → 对话区可显示附件 chips。
+        XCTAssertEqual(session.messages.first(where: { $0.role == .user })?.attachments,
+                       ["/tmp/a.txt", "/tmp/b.txt"])
     }
 
     func testACPFsCallbacksReadWriteDisk() async throws {

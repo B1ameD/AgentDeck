@@ -441,9 +441,18 @@ private struct MessageBubble: View {
                 MarkdownText(content: message.text, linkContext: linkContext)
             }
         } else {
-            Text(message.text)
-                .appFont()
-                .textSelection(.enabled)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(message.text)
+                    .appFont()
+                    .textSelection(.enabled)
+                if !message.attachments.isEmpty {
+                    // 已发送消息里的附件：只读展示（无移除按钮），点击在文件预览侧栏打开。
+                    AttachmentChipsView(
+                        attachments: message.attachments.map { URL(fileURLWithPath: $0) },
+                        onOpen: { onOpenFile($0) }
+                    )
+                }
+            }
         }
     }
 
